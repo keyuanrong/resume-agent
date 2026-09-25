@@ -89,6 +89,23 @@ def __find_matches(text: str, keyword_scores: dict[str, int]) -> list[tuple[str,
     return matches
 
 
+def __find_terms(text: str, keywords: list[str]) -> list[str]:
+    """返回命中的无权重词，用于判断岗位主方向与证据组合。"""
+    normalized = __normalize_text(text)
+    matches = []
+    for keyword in keywords:
+        normalized_keyword = keyword.lower()
+        # 对 ACT、VLA、SAC 等纯英文/数字缩写使用词边界，避免 ACT
+        # 错误命中 Actor-Critic 或 Action。
+        if re.fullmatch(r'[a-z0-9+.-]+', normalized_keyword):
+            pattern = rf'(?<![a-z0-9]){re.escape(normalized_keyword)}(?![a-z0-9])'
+            if re.search(pattern, normalized):
+                matches.append(keyword)
+        elif normalized_keyword in normalized:
+            matches.append(keyword)
+    return matches
+
+
 def evaluateJobMatch(job: str):
     """返回岗位匹配明细，便于日志排查。"""
     title, detail = __extract_job_fields(job)
@@ -123,14 +140,25 @@ def evaluateJobMatch(job: str):
     title_score = 0
     title_matches: list[str] = []
 
-    if title_strong_matches:
-        title_keyword, title_score = max(title_strong_matches, key=lambda item: item[1])
-        title_match_level = 'strong'
-        title_matches = [keyword for keyword, _ in title_strong_matches]
-    elif title_medium_matches:
-        title_keyword, title_score = max(title_medium_matches, key=lambda item: item[1])
-        title_match_level = 'medium'
-        title_matches = [keyword for keyword, _ in title_medium_matches]
+    # 同一标题可能同时命中两组词，必须选择实际分值最高的一项。
+    # 旧逻辑只要命中 strong 就完全忽略 medium，会让“机器人算法实习生
+    # （VLA/运控）”被低分的泛化标题覆盖掉更明确的 VLA 信号。
+    title_candidates = [
+        ('strong', keyword, score)
+        for keyword, score in title_strong_matches
+    ] + [
+        ('medium', keyword, score)
+        for keyword, score in title_medium_matches
+    ]
+    if title_candidates:
+        title_match_level, title_keyword, title_score = max(
+            title_candidates,
+            key=lambda item: item[2],
+        )
+        title_matches = list(dict.fromkeys(
+            [keyword for keyword, _ in title_strong_matches]
+            + [keyword for keyword, _ in title_medium_matches]
+        ))
 
     title_penalty_matches = __find_matches(title, Config.title_penalty_keywords)
     detail_infra_matches = __find_matches(detail, Config.detail_infra_keywords)
@@ -158,22 +186,97 @@ def evaluateJobMatch(job: str):
     raw_score = title_score + detail_score + combo_score - title_penalty_score - penalty_score
     if title_match_level == 'none':
         raw_score = min(raw_score, 55)
+
+    # 关键词分数用于排序；以下岗位画像用于决定“是否真的属于目标方向”。
+    # 这样可避免标题写 VLA 但工作实质是纯 RL/数据管线的误投，也能救回
+    # 标题模糊但职责明确包含 π0、ACT、机器人操作与真机部署的岗位。
+    all_text = f'{title}\n{detail}'
+    title_core_matches = __find_terms(title, Config.title_core_keywords)
+    explicit_vla_matches = __find_terms(all_text, Config.explicit_vla_keywords)
+    policy_model_matches = __find_terms(detail, Config.detail_policy_model_keywords)
+    robot_context_matches = __find_terms(detail, Config.detail_robot_context_keywords)
+    model_work_matches = __find_terms(detail, Config.detail_model_work_keywords)
+    rl_dominant_matches = __find_terms(detail, Config.detail_rl_dominant_keywords)
+    data_engineering_matches = __find_terms(detail, Config.detail_data_engineering_keywords)
+    localization_matches = __find_terms(detail, Config.detail_localization_keywords)
+    title_data_engineering_matches = __find_terms(title, Config.title_data_engineering_keywords)
+    title_control_matches = __find_terms(title, Config.title_control_keywords)
+    title_localization_matches = __find_terms(title, Config.title_localization_keywords)
+
+    high_confidence_match = bool(model_work_matches) and (
+        (
+            bool(title_core_matches)
+            and bool(explicit_vla_matches or policy_model_matches or robot_context_matches)
+        )
+        or (
+            bool(explicit_vla_matches)
+            and bool(robot_context_matches or policy_model_matches)
+        )
+        or (
+            bool(policy_model_matches)
+            and bool(robot_context_matches)
+        )
+    )
+
+    dominant_profile = None
+    if title_control_matches and not title_core_matches:
+        dominant_profile = 'control'
+    elif len(rl_dominant_matches) >= 3 and len(policy_model_matches) == 0:
+        dominant_profile = 'rl'
+    elif title_data_engineering_matches and len(data_engineering_matches) >= 2:
+        dominant_profile = 'data_engineering'
+    elif (title_localization_matches or len(localization_matches) >= 2) and not title_core_matches:
+        dominant_profile = 'localization'
+
+    if high_confidence_match:
+        raw_score = max(raw_score, 90)
+        if len(policy_model_matches) >= 2 or (
+            policy_model_matches and len(robot_context_matches) >= 2
+        ):
+            raw_score = max(raw_score, 95)
+
+    if dominant_profile == 'control':
+        raw_score = min(raw_score, 45)
+    elif dominant_profile == 'rl':
+        raw_score = min(raw_score, 55)
+    elif dominant_profile == 'data_engineering':
+        raw_score = min(raw_score, 55)
+    elif dominant_profile == 'localization':
+        raw_score = min(raw_score, 30)
+
     final_score = max(0, min(100, raw_score))
 
     if title_match_level in ['strong', 'medium']:
         matched_field = 'title'
         keyword = title_keyword
+    elif detail_infra_matches or detail_support_matches:
+        matched_field = 'detail'
+        keyword = (detail_infra_matches + detail_support_matches)[0][0]
+    elif explicit_vla_matches or policy_model_matches or model_work_matches:
+        matched_field = 'detail'
+        keyword = (explicit_vla_matches + policy_model_matches + model_work_matches)[0]
+    else:
+        matched_field = 'none'
+        keyword = None
+
+    if dominant_profile == 'control':
+        reason = '岗位主要工作为运动控制，已按用户标注偏好封顶'
+    elif dominant_profile == 'rl':
+        reason = '岗位主要工作为强化学习后训练，已按用户标注偏好封顶'
+    elif dominant_profile == 'data_engineering':
+        reason = '岗位主要工作为数据管线与基础设施，已按用户标注偏好封顶'
+    elif dominant_profile == 'localization':
+        reason = '岗位主要工作为定位建图，已按用户标注偏好封顶'
+    elif high_confidence_match:
+        reason = 'VLA/策略模型、机器人场景与模型工作形成高置信组合'
+    elif title_match_level in ['strong', 'medium']:
         if title_penalty_matches:
             reason = '岗位名称命中正向关键词，但带有弱负向词扣分'
         else:
             reason = '岗位名称命中正向关键词'
     elif detail_infra_matches or detail_support_matches:
-        matched_field = 'detail'
-        keyword = (detail_infra_matches + detail_support_matches)[0][0]
         reason = '仅职位描述命中，已按标题缺失封顶'
     else:
-        matched_field = 'none'
-        keyword = None
         reason = '未命中有效关键词'
 
     return {
@@ -195,6 +298,13 @@ def evaluateJobMatch(job: str):
         'detail_infra_matches': [keyword for keyword, _ in detail_infra_matches],
         'detail_support_matches': [keyword for keyword, _ in detail_support_matches],
         'detail_negative_matches': [keyword for keyword, _ in detail_negative_matches],
+        'title_core_matches': title_core_matches,
+        'explicit_vla_matches': explicit_vla_matches,
+        'policy_model_matches': policy_model_matches,
+        'robot_context_matches': robot_context_matches,
+        'model_work_matches': model_work_matches,
+        'dominant_profile': dominant_profile,
+        'high_confidence_match': high_confidence_match,
         'reason': reason,
     }
 

@@ -14,21 +14,20 @@
 
 ## 适合什么方向
 
-当前仓库模板默认更适合这些岗位：
-- AI 产品工程师
-- AI 应用工程师
-- AI Agent / 智能体
-- 工作流工程师
-- AI Native / Vibe Coding / 大模型应用落地类岗位
+当前个人配置主要面向这些岗位：
+- VLA / 具身智能算法
+- 机器人学习 / 模仿学习
+- 机器人操作 / 灵巧手算法
+- 具身数据算法与机器人策略训练
 
 当前评分逻辑的核心偏好：
-- 标题只做弱信号
-- JD 正文里的真实技术要求、工具链、工作流是强信号
-- 更关注 Claude Code、Cursor、Codex、Agent、Workflow、Prompt，以及需求到调试部署上线的闭环能力
+- 标题和 JD 主职责共同判断，不能只因标题出现 VLA 就投递
+- π0、ACT、LeRobot、Diffusion Policy、MuJoCo、真机部署是高相关证据
+- 纯强化学习后训练、纯数据基础设施、纯定位建图会被识别并封顶
 
 不适合作为主目标方向的岗位：
-- 传统算法训练 / 模型研发
-- 传统运维 / SRE / DevOps
+- 纯 SLAM / 导航 / 定位建图
+- 纯 RL 后训练或纯数据工程
 - 销售 / 运营
 - 纯 C/C++/Go 底层岗
 
@@ -146,6 +145,11 @@ start_backend.bat
 - `greetTimeout`
 - `preloadScrollPixels`
 - `preloadScrollWaitMs`
+- `maxJobsPerRun`：单次启动最多检查的岗位数，`0` 表示不限制
+- `jobHistoryExpireDays`：跨次岗位去重天数，`0` 表示关闭；默认 7 天
+- `jobHistoryResetToken`：改成一个从未使用过的新值时，在浏览器中自动清空一次岗位历史
+- `companyBlockKeywords`：公司名称或简称黑名单，命中后在评分和打招呼前直接跳过
+- `openChatViewAfterGreet`：Boss沟通接口成功后复用一个只读聊天窗口进行查看，不额外发送消息
 
 ### `backend`
 后端运行参数，例如：
@@ -161,10 +165,12 @@ start_backend.bat
 - 正文强正向词
 - 正文辅助正向词
 - 正文负向扣分词
+- 目标方向证据词（VLA、策略模型、机器人场景、模型工作）
+- 岗位主画像词（纯 RL、纯数据工程、纯定位建图）
 
 当前推荐理解方式：
-- 标题只做快速筛选
-- JD 正文里的真实技术要求才是主要判断依据
+- 标题负责确认方向，JD 正文负责确认实际工作内容
+- 高置信证据组合可提升到投递线，偏离主方向的岗位会被封顶
 
 前端启动时会优先请求后端 `/client-config`，统一读取：
 - `introduce`

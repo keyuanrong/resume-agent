@@ -24,11 +24,17 @@ DEFAULT_USER_CONFIG = {
         'roundRestartDelayMs': 2000,
         'maxEmptyRounds': 3,
         'detailTimeout': 10000,
-        'greetTimeout': 12000,
+        'greetTimeout': 30000,
+        'openChatViewAfterGreet': True,
         'preloadScrollPixels': 180,
         'preloadScrollWaitMs': 450,
         'preloadStableRoundsLimit': 24,
         'preloadMaxRounds': 300,
+        'maxJobsPerRound': 20,
+        'maxJobsPerRun': 0,
+        'jobHistoryExpireDays': 7,
+        'jobHistoryResetToken': '',
+        'companyBlockKeywords': [],
         'preloadActivateCardEvery': 0,
         'preloadActivateCardWaitMs': 250,
     },
@@ -226,6 +232,19 @@ DEFAULT_USER_CONFIG = {
             'to b': 8,
             'to c': 8,
         },
+        # 以下分组用于可选的岗位主方向判断。默认留空，个人配置可按
+        # 求职方向启用，不影响旧配置原有的通用加减分行为。
+        'title_core_keywords': [],
+        'explicit_vla_keywords': [],
+        'detail_policy_model_keywords': [],
+        'detail_robot_context_keywords': [],
+        'detail_model_work_keywords': [],
+        'detail_rl_dominant_keywords': [],
+        'detail_data_engineering_keywords': [],
+        'detail_localization_keywords': [],
+        'title_data_engineering_keywords': [],
+        'title_control_keywords': [],
+        'title_localization_keywords': [],
     },
 }
 
@@ -267,6 +286,13 @@ def load_user_config():
     user_config = RAW_USER_CONFIG
     if isinstance(user_config, dict) and user_config:
         config = _deep_merge(config, user_config)
+        # 评分词库代表一名求职者完整的岗位偏好。这里按组整体替换，
+        # 避免个人配置中已经删除的关键词又从默认词库继承回来。
+        user_scoring = user_config.get('scoring')
+        if isinstance(user_scoring, dict):
+            for group_name, rules in user_scoring.items():
+                if isinstance(rules, dict):
+                    config['scoring'][group_name] = copy.deepcopy(rules)
         config = _apply_legacy_compat(config, user_config)
     return config
 
@@ -293,6 +319,17 @@ class Config:
     detail_infra_keywords = USER_CONFIG['scoring']['detail_infra_keywords']
     detail_support_keywords = USER_CONFIG['scoring']['detail_support_keywords']
     detail_negative_keywords = USER_CONFIG['scoring']['detail_negative_keywords']
+    title_core_keywords = USER_CONFIG['scoring'].get('title_core_keywords', [])
+    explicit_vla_keywords = USER_CONFIG['scoring'].get('explicit_vla_keywords', [])
+    detail_policy_model_keywords = USER_CONFIG['scoring'].get('detail_policy_model_keywords', [])
+    detail_robot_context_keywords = USER_CONFIG['scoring'].get('detail_robot_context_keywords', [])
+    detail_model_work_keywords = USER_CONFIG['scoring'].get('detail_model_work_keywords', [])
+    detail_rl_dominant_keywords = USER_CONFIG['scoring'].get('detail_rl_dominant_keywords', [])
+    detail_data_engineering_keywords = USER_CONFIG['scoring'].get('detail_data_engineering_keywords', [])
+    detail_localization_keywords = USER_CONFIG['scoring'].get('detail_localization_keywords', [])
+    title_data_engineering_keywords = USER_CONFIG['scoring'].get('title_data_engineering_keywords', [])
+    title_control_keywords = USER_CONFIG['scoring'].get('title_control_keywords', [])
+    title_localization_keywords = USER_CONFIG['scoring'].get('title_localization_keywords', [])
 
     frontend = USER_CONFIG['frontend']
     backend = USER_CONFIG['backend']
