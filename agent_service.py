@@ -55,8 +55,6 @@ def _strategy_questions(profile: dict) -> list[dict]:
         {'id': 'targetRoles', 'question': f'这次优先搜索哪些岗位名称？请按优先级列出{hint_text}'},
         {'id': 'preferredSkills', 'question': '哪些简历中已有的技能或项目方向最该进入岗位匹配词表？'},
         {'id': 'excludedKeywords', 'question': '哪些岗位方向或职责明确不考虑？这些词将用于排除。'},
-        {'id': 'cities', 'question': '希望搜索哪些城市的岗位？不限可留空。'},
-        {'id': 'jobType', 'question': '这次要搜索实习、校招还是全职岗位？'},
     ]
 
 
@@ -136,6 +134,7 @@ class QwenAgent:
             "dailyLimit、deliveryMode、resumeDelivery、targetRoles、preferredSkills、cities、jobType、minimumSalary。"
             "searchKeywords 必须是适合在招聘平台搜索的岗位名称短语，而非单个技能词；"
             "preferredSkills 是简历有证据的技术词；excludedKeywords 只放用户明确排除的方向，不凭猜测硬拦截。"
+            "城市、薪资、公司规模、岗位性质和经验要求由招聘网站职位信息提供，不根据简历臆测筛选限制。"
         )
         instruction = (
             "分析这份简历，给出候选人画像和初步岗位词表；不提出面试、Offer、入职时间等问题。"
@@ -168,9 +167,9 @@ class QwenAgent:
     def build_strategy(self, profile: dict, draft: dict, questions: list, answers: dict) -> dict:
         system = (
             "你是求职策略 Agent。根据候选人画像、初步策略和用户回答生成最终策略。"
-            "必须尊重用户明确的城市、薪资、岗位、公司和发送限制，不得自行放宽。"
+            "必须尊重用户明确的岗位方向和排除限制，不得自行放宽。"
             "回答中的 targetRoles 决定目标岗位和搜索词，preferredSkills 决定技能词，"
-            "excludedKeywords 决定硬排除词，cities 和 jobType 决定地域与岗位类型。"
+            "excludedKeywords 决定硬排除词。招聘网站能提供的城市、薪资、岗位性质、公司规模和经验要求不要向用户追问或猜测。"
             "只使用简历有证据的技能；不要把明确排除的方向写入正向搜索词。"
             "只返回 JSON 对象，字段为 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、"
             "greeting、dailyLimit、deliveryMode、resumeDelivery、targetRoles、preferredSkills、cities、jobType、minimumSalary。"
@@ -184,14 +183,13 @@ class QwenAgent:
             terms = _answer_terms(answers.get(field))
             if terms:
                 result[field] = terms
-        for field in ('excludedKeywords', 'cities'):
-            if field in answers:
-                result[field] = _answer_terms(answers[field])
+        result['excludedKeywords'] = _answer_terms(answers.get('excludedKeywords'))
+        for field in ('cities', 'companyBlockKeywords'):
+            result[field] = _answer_terms(answers.get(field))
         if result.get('targetRoles') and _answer_terms(answers.get('targetRoles')):
             result['searchKeywords'] = result['targetRoles'][:8]
-        job_type = str(answers.get('jobType') or '').strip()
-        if 'jobType' in answers:
-            result['jobType'] = job_type
+        result['jobType'] = str(answers.get('jobType') or '').strip()
+        result['minimumSalary'] = str(answers.get('minimumSalary') or '').strip()
         # 词表必须根据最终确认的方向重新生成，不能沿用模型草稿中的评分词。
         result.pop('scoring', None)
         return result

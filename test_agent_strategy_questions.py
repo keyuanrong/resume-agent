@@ -22,7 +22,7 @@ class StrategyQuestionTests(unittest.TestCase):
             result = agent_service.QwenAgent().analyze_resume({'kind': 'text', 'text': 'VLA算法项目经历'})
         self.assertTrue(all(isinstance(item, dict) for item in result['questions']))
         ids = [item['id'] for item in result['questions']]
-        self.assertEqual(ids, ['targetRoles', 'preferredSkills', 'excludedKeywords', 'cities', 'jobType'])
+        self.assertEqual(ids, ['targetRoles', 'preferredSkills', 'excludedKeywords'])
         self.assertIn('VLA算法工程师', result['questions'][0]['question'])
         self.assertTrue(all('Offer' not in item['question'] and '入职' not in item['question'] for item in result['questions']))
         self.assertEqual(result['profile']['risks'], ['2027年毕业，需确认求职类型'])
@@ -80,6 +80,20 @@ class StrategyQuestionTests(unittest.TestCase):
         self.assertIn('VLA算法实习生', normalized['scoring']['title_strong_keywords'])
         self.assertNotIn('旧方向', normalized['scoring']['title_strong_keywords'])
         self.assertIn('销售', normalized['scoring']['title_block_keywords'])
+
+    def test_model_cannot_invent_location_salary_or_job_type_filters(self):
+        model_answer = {
+            'searchKeywords': ['机器人算法'], 'targetRoles': ['机器人算法'],
+            'cities': ['天津'], 'jobType': '全职', 'minimumSalary': '30k',
+            'companyBlockKeywords': ['小公司'],
+        }
+        with patch.object(agent_service.QwenAgent, '__init__', return_value=None), \
+             patch.object(agent_service.QwenAgent, '_request', return_value=model_answer):
+            result = agent_service.QwenAgent().build_strategy({}, {}, [], {})
+        self.assertEqual(result['cities'], [])
+        self.assertEqual(result['jobType'], '')
+        self.assertEqual(result['minimumSalary'], '')
+        self.assertEqual(result['companyBlockKeywords'], [])
 
 
 if __name__ == '__main__':
