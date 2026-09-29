@@ -23,7 +23,7 @@ DEFAULT_USER_CONFIG = {
         'manualFilterWaitMs': 10000,
         'roundRestartDelayMs': 2000,
         'maxEmptyRounds': 3,
-        'detailTimeout': 10000,
+        'detailTimeout': 20000,
         'greetTimeout': 30000,
         'openChatViewAfterGreet': True,
         'preloadScrollPixels': 180,

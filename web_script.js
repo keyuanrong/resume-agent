@@ -48,7 +48,7 @@
                 JOBLIST: '.rec-job-list', // 职位列表
                 JOBCARD: '.job-card-box', // 左侧岗位卡片
                 JOBHREFS: '.job-card-box .job-name', // 职位链接
-                COMPANY: '.boss-name, .job-card-footer .boss-info .boss-name, .company-name, .company-info .company-name, .company-info h3, .company-info a', // 岗位卡片公司名称
+                COMPANY: '.company-name, .company-info a[href*="/gongsi/"], .company-info a[href*="/company/"]', // 仅取明确的公司字段或公司链接
             },
             DETAIL: {
                 STARTCHAT: '.btn-startchat', // 开始聊天按钮
@@ -56,7 +56,7 @@
                 JOBNAME: 'h1', // 职位名称
                 SALARY: '.salary', // 职位薪资
                 DETAIL: '.job-sec-text', // 职位详情
-                COMPANY: '.job-detail-company .company-name, .job-detail-company h2, .sider-company .company-name, .sider-company .company-info a, .company-info .company-name, .company-info h2, .job-boss-info a[href*="/gongsi/"], .job-boss-info .company-name, .job-boss-info .boss-company-name, .job-boss-info .boss-info-company, .job-boss-info .boss-info-attr > :first-child', // 公司名称
+                COMPANY: '.job-detail-company .company-name, .job-detail-company a[href*="/gongsi/"], .job-detail-company a[href*="/company/"], .sider-company .company-name, .sider-company a[href*="/gongsi/"], .sider-company a[href*="/company/"], .job-boss-info .company-name, .job-boss-info .boss-company-name, .job-boss-info .boss-info-company, .job-boss-info a[href*="/gongsi/"], .job-boss-info a[href*="/company/"]', // 仅取明确的公司字段或公司链接
                 CHATURL: 'redirect-url', // 聊天链接
             },
             CHAT: {
@@ -85,6 +85,42 @@
                 USERNAME: '.name-text', // 联系人名称
             }
         },
+    };
+
+    const cleanCompanyName = (value) => String(value || '')
+        .replace(/\s+/g, ' ')
+        .replace(/^(公司名称|所属公司)[：:]?\s*/, '')
+        .trim();
+
+    const invalidCompanyNames = new Set([
+        '公司', '公司信息', '企业', '企业信息', '工商信息',
+        '查看公司', '查看全部职位', '所属公司',
+    ]);
+
+    const isUsableCompanyName = (value) => {
+        const normalized = cleanCompanyName(value).toLowerCase();
+        return normalized.length >= 2 && !invalidCompanyNames.has(normalized);
+    };
+
+    const extractBossCardCompany = (card) => {
+        if (!card) return '';
+        for (const element of card.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.COMPANY)) {
+            const name = cleanCompanyName(element.innerText || element.textContent);
+            if (isUsableCompanyName(name)) return name;
+        }
+        return '';
+    };
+
+    const extractRecruiterCompany = (recruiter) => {
+        const roleLine = String(recruiter?.querySelector('.boss-info-attr')?.innerText || '').trim();
+        const parts = roleLine.match(/^(.+?)\s*[·•]\s*(.+)$/);
+        if (!parts) return '';
+        const company = cleanCompanyName(parts[1]);
+        const role = parts[2].trim();
+        const recruiterName = String(recruiter.innerText || '').split('\n')[0].trim();
+        if (!isUsableCompanyName(company) || company === recruiterName || company.length > 80) return '';
+        if (!/猎头|代招|招聘|人事|HR|工程师|算法|技术|创始人|合伙人|CEO|CTO|经理|主管|负责人|总监|运营|产品|销售/i.test(role)) return '';
+        return company;
     };
 
     // 搜索路径
@@ -841,16 +877,8 @@
             const rememberCompanyFromCard = (jobLink) => {
                 if (!jobLink || !jobLink.href) return;
                 const card = jobLink.closest(SELECTORS.ZHIPIN.SEARCH.JOBCARD);
-                const companyEls = card
-                    ? card.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.COMPANY)
-                    : [];
-                for (const companyEl of companyEls) {
-                    const company = companyEl ? companyEl.innerText.trim() : '';
-                    if (isUsableCompanyName(company)) {
-                        jobCompanyByHref.set(getJobHistoryKey(jobLink.href), company);
-                        break;
-                    }
-                }
+                const company = extractBossCardCompany(card);
+                if (company) jobCompanyByHref.set(getJobHistoryKey(jobLink.href), company);
             };
             const getJobHrefs = async () => {
                 try {
@@ -1062,7 +1090,7 @@
                     skip: true,
                     skipReason: `获取职位详情超时（>${(OPTIONS.detailTimeout / 1000).toFixed(0)}s）`,
                 }));
-                if (!isUsableCompanyName(info.company)) {
+                if (!info.agencyRole && !isUsableCompanyName(info.company)) {
                     const cardCompany = jobCompanyByHref.get(getJobHistoryKey(href)) || '';
                     info.company = isUsableCompanyName(cardCompany) ? cardCompany : '';
                 }
@@ -1200,11 +1228,20 @@
                     logger.add(`正在获取职位详情`);
                     const jobInfo = await getJobInfo(href);
                     if (jobInfo.skip) {
+                        // 已明确识别的猎头岗位也要去重，避免下一轮反复打开并占用检查名额。
+                        if (jobInfo.agencyRole) {
+                            processedJobHrefs.add(getJobHistoryKey(href));
+                            rememberCheckedJob(href);
+                        }
+                        if (jobInfo.recruiterCompany) {
+                            logger.add(`招聘者所属机构：[${jobInfo.recruiterCompany}]`);
+                        }
                         logger.add(`职位跳过: ${jobInfo.skipReason}`);
                         await logAction({
                             action: 'job_skip',
                             scene: 'search',
                             company: jobInfo.company || null,
+                            recruiterCompany: jobInfo.recruiterCompany || null,
                             title: jobInfo.title || null,
                             salary: jobInfo.salary || null,
                             detail: jobInfo.detail || null,
@@ -1569,21 +1606,6 @@
             };
             startBroadcast();
 
-            const cleanCompanyName = (value) => String(value || '')
-                .replace(/\s+/g, ' ')
-                .replace(/^(公司名称|所属公司)[：:]?\s*/, '')
-                .trim();
-
-            const invalidCompanyNames = new Set([
-                '公司', '公司信息', '企业', '企业信息', '工商信息',
-                '查看公司', '查看全部职位', '所属公司',
-            ]);
-
-            const isUsableCompanyName = (value) => {
-                const normalized = cleanCompanyName(value).toLowerCase();
-                return normalized.length >= 2 && !invalidCompanyNames.has(normalized);
-            };
-
             const getCompanyFromStructuredData = () => {
                 const scripts = document.querySelectorAll('script[type="application/ld+json"]');
                 for (const script of scripts) {
@@ -1603,32 +1625,6 @@
                 return '';
             };
 
-            const getCompanyFromRecruiterCard = () => {
-                const recruiter = document.querySelector('.job-boss-info');
-                if (!recruiter) return '';
-
-                const explicitCandidates = recruiter.querySelectorAll(
-                    'a[href*="/gongsi/"], [class*="company"], .boss-info-attr > *'
-                );
-                for (const element of explicitCandidates) {
-                    const name = cleanCompanyName(element?.innerText || element?.textContent);
-                    if (isUsableCompanyName(name) && name.length <= 80) return name;
-                }
-
-                // 新版详情页会把“公司名 + 招聘者职位”放在同一行，例如“漫维科技 招聘主管”。
-                const recruiterTitles = /\s*(?:招聘主管|招聘经理|招聘专员|人事主管|人事经理|人事专员|HRBP|HR|猎头顾问|招聘者|负责人)\s*$/i;
-                const lines = String(recruiter.innerText || recruiter.textContent || '')
-                    .split(/\n+/)
-                    .map(line => cleanCompanyName(line).replace(recruiterTitles, '').trim())
-                    .filter(Boolean);
-                for (const line of lines) {
-                    if (/\d+[日天小时分钟].*活跃|刚刚活跃|在线/.test(line)) continue;
-                    if (/(先生|女士|小姐)$/.test(line)) continue;
-                    if (isUsableCompanyName(line) && line.length <= 80) return line;
-                }
-                return '';
-            };
-
             const getCompanyName = () => {
                 const companyEls = document.querySelectorAll(SELECTORS.ZHIPIN.DETAIL.COMPANY);
                 for (const companyEl of companyEls) {
@@ -1639,16 +1635,6 @@
                 const structuredName = getCompanyFromStructuredData();
                 if (isUsableCompanyName(structuredName)) return structuredName;
 
-                const recruiterCompany = getCompanyFromRecruiterCard();
-                if (isUsableCompanyName(recruiterCompany)) return recruiterCompany;
-
-                const companyLinks = document.querySelectorAll(
-                    'a[href*="/gongsi/"], a[href*="/company/"]'
-                );
-                for (const link of companyLinks) {
-                    const name = cleanCompanyName(link.innerText || link.textContent);
-                    if (isUsableCompanyName(name) && name.length <= 80) return name;
-                }
                 return '';
             };
 
@@ -1659,14 +1645,21 @@
                 const title = nameBox.querySelector(SELECTORS.ZHIPIN.DETAIL.JOBNAME).innerText;
                 const salary = nameBox.querySelector(SELECTORS.ZHIPIN.DETAIL.SALARY).innerText;
                 const detail = document.querySelector(SELECTORS.ZHIPIN.DETAIL.DETAIL).innerText;
-                const company = getCompanyName();
+                const recruiter = document.querySelector('.job-boss-info');
+                const recruiterCompany = extractRecruiterCompany(recruiter);
+                const recruiterText = recruiter?.innerText || '';
+                const agencyRole = recruiterText.match(/猎头顾问|猎头经理|猎头招聘|猎头服务|代理招聘|代招/);
+                const company = agencyRole ? '' : (getCompanyName() || recruiterCompany);
                 const actionText = chatBtn ? chatBtn.innerText.trim() : '';
                 const chatUrl = chatBtn && chatBtn.getAttribute(SELECTORS.ZHIPIN.DETAIL.CHATURL);
                 const addUrl = chatBtn && chatBtn.dataset.url;
                 let skip = false;
                 let skipReason = '';
 
-                if (!chatBtn) {
+                if (agencyRole) {
+                    skip = true;
+                    skipReason = `招聘者信息标注为${agencyRole[0]}`;
+                } else if (!chatBtn) {
                     skip = true;
                     skipReason = '未找到立即沟通按钮';
                 } else if (actionText.indexOf('立即沟通') === -1) {
@@ -1680,6 +1673,8 @@
                 return {
                     title,
                     company,
+                    recruiterCompany,
+                    agencyRole: agencyRole?.[0] || '',
                     salary,
                     detail,
                     actionText,

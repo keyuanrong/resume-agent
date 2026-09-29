@@ -313,13 +313,6 @@ class SingleRouteBackendTests(unittest.TestCase):
             script,
         )
 
-    def test_company_extraction_covers_current_boss_card_and_recruiter_area(self):
-        script = (ROOT / 'web_script.js').read_text(encoding='utf-8')
-
-        self.assertIn("COMPANY: '.boss-name", script)
-        self.assertIn('getCompanyFromRecruiterCard', script)
-        self.assertIn("document.querySelector('.job-boss-info')", script)
-
     def test_multi_platform_runner_keeps_test_lock_and_limits_live_greeting(self):
         script = (ROOT / 'multi_platform_test.user.js').read_text(encoding='utf-8')
 
