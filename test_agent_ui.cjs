@@ -94,3 +94,10 @@ test('agent editor shows and confirms weighted positive and soft negative lists'
   assert.equal(ui.confirmations[0].scoring.title_strong_keywords['VLA算法'], 92);
   assert.equal(ui.confirmations[0].scoring.detail_negative_keywords['传统定位建图'], 16);
 });
+
+test('agent mode lets the user select a locally identified direction', () => {
+  const ui = page();
+  vm.runInContext("renderAgentDirections([{id:'robot_vla',name:'VLA / 具身智能'},{id:'backend',name:'后端开发'}], 'robot_vla')", ui.context);
+  assert.deepEqual(ui.get('agentDirectionSelect').children.map(option => option.value), ['robot_vla', 'backend']);
+  assert.equal(ui.get('agentDirectionSelect').value, 'robot_vla');
+});

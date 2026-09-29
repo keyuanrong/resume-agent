@@ -172,6 +172,21 @@ class QwenAgent:
             raise AgentRequestError("Agent API 返回结构不符合预期") from exc
         return _extract_json(content)
 
+    def extract_resume_text(self, resume: dict) -> str:
+        if resume.get('kind') != 'image':
+            raise ValueError('只支持转录图片简历')
+        result = self._request([
+            {'role': 'system', 'content': '只逐字转录图片中的简历文字。保留 π0、π0.5 等型号的原始写法；不要概括、补充经历或改写术语。只返回 JSON：{"text":"转录内容"}。'},
+            {'role': 'user', 'content': [
+                {'type': 'text', 'text': '请转录这份简历。'},
+                {'type': 'image_url', 'image_url': {'url': resume['dataUrl']}},
+            ]},
+        ], max_tokens=6000)
+        text = str(result.get('text') or '').strip()
+        if len(text) < 40:
+            raise AgentRequestError('图片简历可识别文字太少，请上传清晰图片或可复制文字的文件')
+        return text
+
     def analyze_resume(self, resume: dict) -> dict:
         system = (
             "你是求职策略分析 Agent。只根据候选人简历中真实出现的内容生成画像，不得编造经历。"

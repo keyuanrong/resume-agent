@@ -109,5 +109,9 @@ def delete_resume(resume_id: str) -> dict:
     path = _absolute_resume_path(record)
     if path.exists():
         path.unlink()
+    if path.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'}:
+        ocr_path = RESUME_DIR / f'{path.stem}.ocr.txt'
+        if ocr_path.exists():
+            ocr_path.unlink()
     delete_resume_record(resume_id)
     return record

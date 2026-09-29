@@ -73,6 +73,7 @@ function strategySummary(s) {
     `搜索关键词：${(s.searchKeywords || []).join('、') || '未设置'}`,
     `目标岗位：${(s.targetRoles || []).join('、') || '未设置'}`,
     `优先技能：${(s.preferredSkills || []).join('、') || '未设置'}`,
+    ...(s.ignoredPreferredSkills?.length ? [`未采纳的技能词（简历或所选方向缺少证据）：${s.ignoredPreferredSkills.join('、')}`] : []),
     `标题词库：${Object.keys(s.scoring?.title_strong_keywords || {}).length} 个`,
     `JD词库：${Object.keys(s.scoring?.detail_infra_keywords || {}).length} 个`,
     `标题软扣分词：${Object.keys(s.scoring?.title_penalty_keywords || {}).length} 个`,
@@ -102,6 +103,18 @@ function renderAgentEditor(s) {
   $('agentEditResumeDelivery').value = s.resumeDelivery || 'platform_resume';
 }
 
+function renderAgentDirections(directions, selected) {
+  const select = $('agentDirectionSelect');
+  select.replaceChildren();
+  (directions || []).forEach(direction => {
+    const option = document.createElement('option');
+    option.value = direction.id; option.textContent = direction.name;
+    select.appendChild(option);
+  });
+  select.value = selected || directions?.[0]?.id || '';
+  $('agentDirectionRow').classList.toggle('hidden', !(directions || []).length);
+}
+
 function renderMode() {
   const enabled = $('agentToggle').checked;
   $('manualForm').classList.toggle('hidden', enabled);
@@ -109,7 +122,7 @@ function renderMode() {
   $('agentIdentity').classList.toggle('hidden', !enabled);
   $('strategyTitle').textContent = enabled ? 'Agent 辅助模式' : '手动规则模式';
   $('modeDescription').textContent = enabled
-    ? 'Agent 负责分析简历、生成策略和判断边界岗位；硬规则仍然拥有最高优先级。'
+    ? '简历词表在本机生成；Agent 只复核边界岗位，图片简历需先由模型转录。'
     : '完全使用本地规则，不调用模型，也不会把简历发送给第三方。';
 }
 
@@ -478,10 +491,11 @@ dropzone.addEventListener('drop', event => queueResumeFiles(event.dataTransfer.f
 
 $('analyzeResumeButton').addEventListener('click', async () => {
   const resumeId = $('resumeSelect').value; if (!resumeId) return toast('请先选择一份简历', true);
-  $('analyzeResumeButton').disabled = true; $('analyzeResumeButton').textContent = 'Agent 分析中…';
+  $('analyzeResumeButton').disabled = true; $('analyzeResumeButton').textContent = '简历分析中…';
   try {
     const result = await api('/api/agent/analyze-resume', {method:'POST', body:JSON.stringify({resumeId})});
     state.questions = result.questions || []; state.strategy = result.draftStrategy;
+    renderAgentDirections(result.candidateDirections, result.recommendedDirectionId);
     $('profileResult').classList.remove('hidden'); $('profileResult').textContent = formatResumeAnalysis(result.profile, result.draftStrategy);
     const list = $('questionsList'); list.innerHTML = '';
     state.questions.forEach((q,i) => {
@@ -499,7 +513,7 @@ $('analyzeResumeButton').addEventListener('click', async () => {
 $('buildStrategyButton').addEventListener('click', async () => {
   const answers = {}; document.querySelectorAll('[data-question]').forEach((input,i)=>{ const q=state.questions[i]; const key=typeof q==='string'?q:(q.id||q.question||`q${i+1}`); answers[key]=input.value; });
   $('buildStrategyButton').disabled=true; $('buildStrategyButton').textContent='生成中…';
-  try { state.strategy=await api('/api/agent/build-strategy',{method:'POST',body:JSON.stringify({answers})}); $('agentStrategyResult').textContent=strategySummary(state.strategy); renderAgentEditor(state.strategy); $('agentStrategyBlock').classList.remove('hidden'); toast('最终策略已生成，请确认或修改'); }
+  try { state.strategy=await api('/api/agent/build-strategy',{method:'POST',body:JSON.stringify({answers,directionId:$('agentDirectionSelect').value})}); $('agentStrategyResult').textContent=strategySummary(state.strategy); renderAgentEditor(state.strategy); $('agentStrategyBlock').classList.remove('hidden'); toast('最终策略已生成，请确认或修改'); }
   catch(e){ toast(e.message,true); }
   finally { $('buildStrategyButton').disabled=false; $('buildStrategyButton').textContent='生成最终策略'; }
 });

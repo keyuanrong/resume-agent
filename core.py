@@ -84,7 +84,12 @@ def __find_matches(text: str, keyword_scores: dict[str, int]) -> list[tuple[str,
     normalized = __normalize_text(text)
     matches = []
     for keyword, score in keyword_scores.items():
-        if keyword.lower() in normalized:
+        needle = keyword.lower()
+        if re.fullmatch(r'(?:π|pi)0', needle):
+            matched = bool(re.search(rf'(?<![a-z0-9]){re.escape(needle)}(?![.\d])', normalized))
+        else:
+            matched = needle in normalized
+        if matched:
             matches.append((keyword, score))
     return matches
 
@@ -97,7 +102,11 @@ def __find_terms(text: str, keywords: list[str]) -> list[str]:
         normalized_keyword = keyword.lower()
         # 对 ACT、VLA、SAC 等纯英文/数字缩写使用词边界，避免 ACT
         # 错误命中 Actor-Critic 或 Action。
-        if re.fullmatch(r'[a-z0-9+.-]+', normalized_keyword):
+        if re.fullmatch(r'(?:π|pi)0', normalized_keyword):
+            pattern = rf'(?<![a-z0-9]){re.escape(normalized_keyword)}(?![.\d])'
+            if re.search(pattern, normalized):
+                matches.append(keyword)
+        elif re.fullmatch(r'[a-z0-9+.-]+', normalized_keyword):
             pattern = rf'(?<![a-z0-9]){re.escape(normalized_keyword)}(?![a-z0-9])'
             if re.search(pattern, normalized):
                 matches.append(keyword)

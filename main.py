@@ -13,10 +13,10 @@ from starlette.responses import HTMLResponse, Response
 from core import replyMsg, isNeedResume, isNeedWorks, evaluateSingleRouteDelivery
 from schema import Msg
 from config import Config
-from agent_service import AgentConfigurationError, AgentRequestError, get_agent
+from agent_service import AgentConfigurationError, AgentRequestError, get_agent, _answer_terms, _strategy_questions
 from local_strategy_service import analyze_local_resume, build_scoring_from_strategy, generate_local_strategy
 from platforms import list_platforms
-from product_store import get_product_config, list_resumes, save_product_config
+from product_store import get_product_config, list_resumes, save_product_config, RESUME_DIR
 from product_store import get_api_key, KeyringUnavailableError
 from model_providers import get_provider, list_provider_models, ModelDiscoveryError
 from resume_service import delete_resume, get_resume_for_agent, get_resume_text_local, save_resume
@@ -580,18 +580,46 @@ async def api_local_build_strategy(payload: dict = Body(...)):
     }
 
 
-@app.post('/api/agent/analyze-resume', summary='Agent 分析简历')
+def _resume_text_for_strategy(resume_id: str) -> dict:
+    resume = get_resume_for_agent(resume_id)
+    if resume.get('kind') == 'text':
+        return resume
+    # 图片只转录一次，后续重建词表复用本地文字。
+    if not re.fullmatch(r'[0-9a-f]{32}', resume_id):
+        raise ValueError('简历编号无效')
+    cached_path = RESUME_DIR / f'{resume_id}.ocr.txt'
+    if cached_path.exists():
+        text = cached_path.read_text(encoding='utf-8')
+    else:
+        text = get_agent().extract_resume_text(resume)
+        cached_path.write_text(text, encoding='utf-8')
+    return {'kind': 'text', 'text': text, 'record': resume.get('record', {})}
+
+
+@app.post('/api/agent/analyze-resume', summary='本地解析简历并生成 Agent 模式词表')
 async def api_agent_analyze_resume(payload: dict = Body(...)):
     resume_id = str(payload.get('resumeId') or '')
     try:
-        resume = get_resume_for_agent(resume_id)
-        result = await asyncio.to_thread(get_agent().analyze_resume, resume)
+        resume = await asyncio.to_thread(_resume_text_for_strategy, resume_id)
+        text = str(resume.get('text') or '')
+        analysis = await asyncio.to_thread(
+            analyze_local_resume, text,
+            filename=str(resume.get('record', {}).get('name') or ''),
+        )
+        direction_id = analysis['recommendedDirectionId']
+        result = await asyncio.to_thread(
+            generate_local_strategy, text,
+            resume_id=resume_id,
+            filename=str(resume.get('record', {}).get('name') or ''),
+            direction_id=direction_id,
+        )
     except (ValueError, RuntimeError, AgentConfigurationError, AgentRequestError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     profile = result.get('profile') if isinstance(result.get('profile'), dict) else {}
-    questions = result.get('questions') if isinstance(result.get('questions'), list) else []
+    questions = _strategy_questions(profile)
     draft = result.get('draftStrategy') if isinstance(result.get('draftStrategy'), dict) else {}
     draft['resumeId'] = resume_id
+    draft['directionId'] = direction_id
     draft = _normalize_strategy(draft, source='agent', confirmed=False)
     save_product_config({
         'mode': 'agent',
@@ -599,25 +627,40 @@ async def api_agent_analyze_resume(payload: dict = Body(...)):
         'agentQuestions': questions[:8],
         'strategy': draft,
     }, replace_strategy=True)
-    return {'profile': profile, 'questions': questions[:8], 'draftStrategy': draft}
+    return {
+        'profile': profile, 'questions': questions[:8], 'draftStrategy': draft,
+        'candidateDirections': analysis['candidateDirections'],
+        'recommendedDirectionId': direction_id,
+    }
 
 
-@app.post('/api/agent/build-strategy', summary='Agent 根据回答生成最终策略')
+@app.post('/api/agent/build-strategy', summary='根据用户回答重建本地词表')
 async def api_agent_build_strategy(payload: dict = Body(...)):
     config = get_product_config(public=False)
+    draft = config.get('strategy', {})
+    resume_id = str(draft.get('resumeId') or '')
+    answers = payload.get('answers', {}) if isinstance(payload.get('answers'), dict) else {}
     try:
+        resume = await asyncio.to_thread(_resume_text_for_strategy, resume_id)
+        text = str(resume.get('text') or '')
         result = await asyncio.to_thread(
-            get_agent().build_strategy,
-            config.get('candidateProfile', {}),
-            config.get('strategy', {}),
-            config.get('agentQuestions', []),
-            payload.get('answers', {}),
+            generate_local_strategy, text,
+            resume_id=resume_id,
+            filename=str(resume.get('record', {}).get('name') or ''),
+            direction_id=str(payload.get('directionId') or draft.get('directionId') or '') or None,
+            user_excluded=_answer_terms(answers.get('excludedKeywords')),
+            target_roles=_answer_terms(answers.get('targetRoles')) or None,
+            preferred_skills=_answer_terms(answers.get('preferredSkills')) or None,
         )
-    except (AgentConfigurationError, AgentRequestError) as exc:
+    except (ValueError, RuntimeError, AgentConfigurationError, AgentRequestError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result['resumeId'] = config.get('strategy', {}).get('resumeId')
-    strategy = _normalize_strategy(result, source='agent', confirmed=False)
-    save_product_config({'mode': 'agent', 'strategy': strategy}, replace_strategy=True)
+    strategy = dict(result['draftStrategy'])
+    strategy['directionId'] = result['selectedDirectionId']
+    strategy['ignoredPreferredSkills'] = result['ignoredPreferredSkills']
+    strategy = _normalize_strategy(strategy, source='agent', confirmed=False)
+    save_product_config({
+        'mode': 'agent', 'strategy': strategy, 'candidateProfile': result['profile'],
+    }, replace_strategy=True)
     return strategy
 
 

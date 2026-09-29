@@ -50,7 +50,7 @@ ROLE_TEMPLATES: list[dict[str, Any]] = [
     {
         "id": "robot_vla",
         "name": "VLA / 具身智能",
-        "signals": ["vla", "vision-language-action", "lerobot", "smolvla", "openvla", "pi0", "π0", "act", "mujoco", "机器人操作", "具身智能", "机械臂", "模仿学习"],
+        "signals": ["vla", "vision-language-action", "lerobot", "smolvla", "openvla", "pi0.5", "π0.5", "pi0", "π0", "act", "mujoco", "机器人操作", "具身智能", "机械臂", "模仿学习", "在线强化学习", "离线强化学习"],
         "roles": ["VLA算法工程师", "具身智能算法工程师", "机器人学习算法工程师"],
         "titleTerms": ["vla", "具身智能", "机器人学习", "具身操作", "机器人操作"],
         "negative": ["slam", "定位建图", "路径规划", "运动控制", "运控", "机械设计", "电气设计", "销售"],
@@ -139,6 +139,8 @@ def _normalize(text: str) -> str:
 def _contains(text: str, term: str) -> bool:
     normalized = text.lower()
     needle = term.lower()
+    if re.fullmatch(r'(?:π|pi)0', needle):
+        return bool(re.search(rf'(?<![a-z0-9]){re.escape(needle)}(?![.\d])', normalized))
     if re.fullmatch(r"[a-z0-9+.#-]+", needle):
         return bool(re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", normalized))
     return needle in normalized
@@ -226,7 +228,7 @@ def build_scoring_from_strategy(strategy: dict) -> dict:
         "title_block_keywords": {term: 100 for term in excluded},
         "title_penalty_keywords": {},
         "title_strong_keywords": {term: max(68, 86 - index * 2) for index, term in enumerate(title_terms)},
-        "title_medium_keywords": {term: 52 for term in _unique(skills, 12)},
+        "title_medium_keywords": {},
         "detail_infra_keywords": {term: 10 for term in skills[:16]},
         "detail_support_keywords": {term: 5 for term in skills[16:30]},
         "detail_negative_keywords": {term: 18 for term in excluded},
@@ -251,6 +253,8 @@ def generate_local_strategy(
     filename: str = "",
     direction_id: str | None = None,
     user_excluded: list[str] | None = None,
+    target_roles: list[str] | None = None,
+    preferred_skills: list[str] | None = None,
 ) -> dict:
     text = _normalize(resume_text)
     if len(text) < 40:
@@ -272,11 +276,22 @@ def generate_local_strategy(
         hint for hint in _resume_role_hints(resume_text)
         if any(_contains(hint, term) or _contains(term, hint) for term in primary_template["titleTerms"])
     ]
-    target_roles = _unique(resume_hints + primary_template["roles"], 6)
+    target_roles = _unique(target_roles, 8) if target_roles else _unique(resume_hints + primary_template["roles"], 6)
     # 个人技能词只取用户选定方向的证据，避免嵌入式方向仍把简历里的
     # VLA 经历当成岗位加分项，反之亦然。
     matched_skills = _unique(primary_skills, 28)
-    search_keywords = _unique(resume_hints + primary_template["roles"], 6)
+    ignored_skills: list[str] = []
+    if preferred_skills:
+        evidence_terms = {term.lower() for term in primary_skills}
+        matched_skills = _unique([
+            term for term in preferred_skills
+            if term.lower() in evidence_terms and _contains(text, term)
+        ], 28)
+        accepted = {term.lower() for term in matched_skills}
+        ignored_skills = _unique([
+            term for term in preferred_skills if term.lower() not in accepted
+        ], 28)
+    search_keywords = target_roles[:]
     # 只有用户明确选择的词才做硬拦截。模板中的相邻方向只参与扣分。
     excluded = _unique([str(term) for term in (user_excluded or [])], 24)
     direction_negative = _unique(primary_template["negative"], 16)
@@ -290,7 +305,7 @@ def generate_local_strategy(
     # 简历命中的方向词比普通技能更适合用于岗位标题匹配。
     scoring["title_medium_keywords"] = {
         term: max(38, 58 - index * 2)
-        for index, term in enumerate(_unique(primary_template["titleTerms"] + primary_skills, 16))
+        for index, term in enumerate(_unique(primary_template["titleTerms"], 16))
     }
     scoring["title_block_keywords"] = {term: 100 for term in excluded}
     scoring["title_penalty_keywords"] = {
@@ -325,14 +340,21 @@ def generate_local_strategy(
         "minimumSalary": "",
         "scoring": scoring,
     }
+    evidence_lines = _unique([
+        _normalize(line)[:240]
+        for line in resume_text.splitlines()
+        if len(_normalize(line)) >= 20 and any(_contains(line, skill) for skill in matched_skills)
+    ], 8)
     profile = {
         "summary": f"已按“{primary_template['name']}”方向生成个人词库",
         "skills": matched_skills,
+        "experienceHighlights": evidence_lines,
         "targetRoleHints": target_roles,
         "templateIds": [primary_template["id"]],
     }
     return {
         "profile": profile,
+        "ignoredPreferredSkills": ignored_skills,
         "candidateDirections": analysis["candidateDirections"],
         "selectedDirectionId": primary_template["id"],
         "draftStrategy": strategy,

@@ -171,8 +171,8 @@
 
         <div id="agentPanel" class="hidden">
           <div class="notice">
-            <strong>Agent 会读取简历内容</strong>
-            <span>简历会发送到所选模型服务商；API Key 保存在本机系统密钥库，页面不会回显。</span>
+            <strong>简历词表在本机生成</strong>
+            <span>文字简历只在本机解析；图片简历会发送给所选模型转录文字。评分难判断的岗位会发送职位和简历画像给 Agent 复核。API Key 保存在本机系统密钥库。</span>
           </div>
           <div class="provider-actions" role="group" aria-label="模型服务商">
             <button class="button secondary" type="button" data-agent-provider="bailian">阿里云百炼</button>
@@ -194,7 +194,7 @@
             <div class="step-number">1</div>
             <div class="step-content">
               <h3>上传简历</h3>
-              <p>先在右侧“简历资产”上传，再选择要交给 Agent 分析的简历。</p>
+              <p>先在上方上传并选择简历；文字简历本地解析，图片简历需要模型转录。</p>
               <select id="resumeSelect"><option value="">请选择简历</option></select>
             </div>
           </div>
@@ -213,6 +213,9 @@
             <div class="step-content">
               <h3>确认求职方向（可跳过）</h3>
               <p>只需确认简历无法说明的岗位偏好；城市、薪资等职位信息由招聘页面提供。</p>
+              <label id="agentDirectionRow" class="hidden">选择主要岗位方向
+                <select id="agentDirectionSelect"></select>
+              </label>
               <div id="questionsList"></div>
               <button id="buildStrategyButton" class="button primary" type="button">生成最终策略</button>
             </div>
