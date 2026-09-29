@@ -179,15 +179,14 @@
             <button class="button secondary" type="button" data-agent-provider="deepseek">DeepSeek</button>
           </div>
           <div class="form-grid compact">
-            <label class="full">模型名称
-              <input id="agentModel" list="agentModelOptions" value="qwen3.8-flash" autocomplete="off">
-              <datalist id="agentModelOptions"></datalist>
-            </label>
             <label class="full">API Key
               <input id="agentApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="已配置时可留空；输入后不会回显">
             </label>
-            <button id="loadAgentModelsButton" class="button secondary full" type="button">查询当前服务商的可用模型</button>
-            <small id="agentModelHint" class="full">选择服务商，填写该服务商的 API Key 后查询模型。</small>
+            <label class="full">模型名称
+              <select id="agentModel" disabled><option value="">输入 API Key 后选择模型</option></select>
+            </label>
+            <small id="agentModelHint" class="full">输入 API Key 后会自动查询当前服务商的模型。</small>
+            <button id="loadAgentModelsButton" class="button secondary full" type="button">重新查询模型</button>
             <button id="saveAgentButton" class="button secondary full" type="button">保存 Agent 设置</button>
           </div>
 

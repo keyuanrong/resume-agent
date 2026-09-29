@@ -4,7 +4,7 @@
 
 **Goal:** 将 Agent 设置收敛为模型和 API Key 两项，并支持百炼、DeepSeek 模型列表与系统密钥库。
 
-**Architecture:** `model_providers.py` 固定两家服务商的端点和模型列表解析；`product_store.py` 用系统密钥库保存服务商各自的 Key；`agent_service.py` 按服务商组装推理请求；`main.py` 提供模型列表接口；`static` 两个文件更新界面。用户先在模型控件选服务商所属的型号，后端只查该服务商。
+**Architecture:** `model_providers.py` 固定两家服务商的端点和模型列表解析；`product_store.py` 用系统密钥库保存服务商各自的 Key；`agent_service.py` 按服务商组装推理请求；`main.py` 提供模型列表接口；`static` 两个文件更新界面。用户先选择服务商，再输入 Key，页面查询后由用户选择模型。
 
 **Tech Stack:** Python 3.10+、FastAPI、标准库 `urllib`、Python `keyring`、原生 HTML/JS、`unittest`。
 
@@ -73,11 +73,11 @@
 - Modify: `test_agent_configuration.py`
 
 **Interfaces:**
-- 模型控件记录选中的 `{provider, model}`，保存时仅提交这两项和可选新 Key；“获取可用模型”调用 `/api/agent/models?provider=...`，失败不清空当前选择。
+- 模型控件记录选中的 `{provider, model}`，保存时仅提交这两项和可选新 Key；输入 Key 后自动调用 `POST /api/agent/models`，失败给出错误并可重试。
 
 - [ ] **Step 1: 写失败测试。** 验证页面不再包含单独的服务商输入项，只有模型与密码输入；控制台脚本保存后清空 Key，接口响应不回显 Key，模型列表失败保留选择。
 - [ ] **Step 2: 运行测试确认预期失败。**
-- [ ] **Step 3: 实现界面和文档。** 模型候选按服务商分组；已有 Key 显示状态不回填；用户明确选服务商所属型号后才请求该服务商列表；错误消息显示在界面上。
+- [ ] **Step 3: 实现界面和文档。** API Key 在前、模型下拉框在后；服务商按钮确定查询目标；输入 Key 后自动查询，无预设候选；已有 Key 显示状态不回填；错误消息显示在界面上。
 - [ ] **Step 4: 在隔离副本运行 `python -m unittest -v test_agent_configuration.py test_single_route_backend.py` 和 Python 语法检查；确认当前分支 diff 只含目标文件，再提交。**
 
 ## 自检
