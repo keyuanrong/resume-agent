@@ -53,6 +53,20 @@ function parseWeightedLines(value) {
   });
   return result;
 }
+function formatResumeAnalysis(profile, draft) {
+  return [
+    '简历摘要',
+    profile?.summary || '暂无摘要',
+    '',
+    '初步岗位搜索词',
+    (draft?.searchKeywords || []).join('、') || '待补充',
+    '',
+    '技能匹配词',
+    (draft?.preferredSkills || []).join('、') || (profile?.skills || []).join('、') || '待补充',
+    '',
+    '请回答下方问题，以确定最终搜索词和排除词。',
+  ].join('\n');
+}
 function strategySummary(s) {
   if (!s) return '尚未生成策略';
   return [
@@ -462,7 +476,7 @@ $('analyzeResumeButton').addEventListener('click', async () => {
   try {
     const result = await api('/api/agent/analyze-resume', {method:'POST', body:JSON.stringify({resumeId})});
     state.questions = result.questions || []; state.strategy = result.draftStrategy;
-    $('profileResult').classList.remove('hidden'); $('profileResult').textContent = JSON.stringify(result.profile, null, 2);
+    $('profileResult').classList.remove('hidden'); $('profileResult').textContent = formatResumeAnalysis(result.profile, result.draftStrategy);
     const list = $('questionsList'); list.innerHTML = '';
     state.questions.forEach((q,i) => {
       const row=document.createElement('label'); row.className='question';

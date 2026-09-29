@@ -66,3 +66,12 @@ test('an unconfigured account does not display a default model as selected', () 
   assert.equal(ui.get('agentModel').value, '');
   assert.equal(ui.get('modelLabel').textContent, '待选择');
 });
+
+test('resume analysis displays the proposed search terms alongside the summary', () => {
+  const ui = page();
+  const output = vm.runInContext(`typeof formatResumeAnalysis === 'function'
+    ? formatResumeAnalysis({summary:'机器人项目经历', skills:['LeRobot']}, {searchKeywords:['VLA算法实习生'], preferredSkills:['LeRobot']})
+    : ''`, ui.context);
+  assert.match(output, /初步岗位搜索词[\s\S]*VLA算法实习生/);
+  assert.match(output, /技能匹配词[\s\S]*LeRobot/);
+});
