@@ -25,7 +25,8 @@ class ModelDiscoveryTests(unittest.TestCase):
             {'model': 'qwen3.7-flash', 'name': 'Qwen 3.7 Flash', 'provider': 'qwen'},
             {'model': 'qwen3.8-flash', 'name': 'Qwen 3.8 Flash', 'provider': 'qwen'},
         ], 'total': 2}}
-        with mock.patch('urllib.request.urlopen', return_value=_Response(body)) as opener:
+        with mock.patch.dict('os.environ', {'DASHSCOPE_WORKSPACE_ID': ''}), \
+             mock.patch('urllib.request.urlopen', return_value=_Response(body)) as opener:
             models = list_provider_models('bailian', 'secret-key')
         self.assertEqual(models, [
             {'id': 'qwen3.7-flash', 'name': 'Qwen 3.7 Flash', 'provider': 'bailian'},
@@ -51,6 +52,14 @@ class ModelDiscoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 list_provider_models('unknown', 'secret-key')
         opener.assert_not_called()
+
+    def test_bailian_workspace_uses_official_beijing_endpoint(self):
+        from model_providers import list_provider_models
+        with mock.patch.dict('os.environ', {'DASHSCOPE_WORKSPACE_ID': 'ws-test123'}), \
+             mock.patch('urllib.request.urlopen', return_value=_Response({'output': {'models': []}})) as opener:
+            self.assertEqual(list_provider_models('bailian', 'secret-key'), [])
+        self.assertEqual(opener.call_args.args[0].full_url,
+                         'https://ws-test123.cn-beijing.maas.aliyuncs.com/api/v1/models?page_no=1&page_size=100')
 
 
 if __name__ == '__main__':

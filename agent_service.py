@@ -6,7 +6,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from product_store import get_api_key, get_product_config
+from product_store import KeyringUnavailableError, get_api_key, get_product_config
+from model_providers import get_provider
 
 
 class AgentConfigurationError(RuntimeError):
@@ -41,13 +42,21 @@ def _extract_json(content: str) -> dict:
 class QwenAgent:
     def __init__(self):
         config = get_product_config(public=False).get("agent", {})
-        self.api_key = get_api_key()
+        self.provider_id = config.get('provider') or 'bailian'
+        if self.provider_id == 'qwen':
+            self.provider_id = 'bailian'
+        try:
+            provider = get_provider(self.provider_id)
+        except ValueError as exc:
+            raise AgentConfigurationError(str(exc)) from exc
+        try:
+            self.api_key = get_api_key(self.provider_id)
+        except KeyringUnavailableError as exc:
+            raise AgentConfigurationError(str(exc)) from exc
         self.model = str(config.get("model") or "qwen3.8-flash")
-        self.base_url = str(config.get("baseUrl") or "").strip()
+        self.base_url = provider.chat_url
         if not self.api_key:
-            raise AgentConfigurationError("尚未配置阿里云百炼 API Key")
-        if not self.base_url.startswith("https://"):
-            raise AgentConfigurationError("Agent API 地址必须使用 HTTPS")
+            raise AgentConfigurationError(f"尚未配置{provider.name} API Key")
 
     def _request(self, messages: list[dict], *, max_tokens: int = 3000) -> dict:
         payload = {
@@ -56,8 +65,9 @@ class QwenAgent:
             "temperature": 0.2,
             "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
-            "enable_thinking": False,
         }
+        if self.provider_id == 'bailian':
+            payload['enable_thinking'] = False
         request = urllib.request.Request(
             self.base_url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -71,8 +81,7 @@ class QwenAgent:
             with urllib.request.urlopen(request, timeout=60) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")[:500]
-            raise AgentRequestError(f"Agent API 请求失败（HTTP {exc.code}）：{detail}") from exc
+            raise AgentRequestError(f"Agent API 请求失败（HTTP {exc.code}）") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise AgentRequestError(f"无法连接 Agent API：{exc}") from exc
         try:
@@ -157,6 +166,4 @@ def get_agent() -> QwenAgent:
     agent = config.get("agent", {})
     if not agent.get("enabled"):
         raise AgentConfigurationError("Agent 当前未开启")
-    if agent.get("provider") != "qwen":
-        raise AgentConfigurationError("第一版目前只接入阿里云百炼 Qwen")
     return QwenAgent()

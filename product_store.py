@@ -4,6 +4,13 @@ import copy
 import json
 from pathlib import Path
 from typing import Any
+import keyring
+
+from model_providers import get_provider
+
+
+class KeyringUnavailableError(RuntimeError):
+    pass
 
 
 ROOT = Path(__file__).resolve().parent
@@ -20,7 +27,7 @@ DEFAULT_PRODUCT_CONFIG: dict[str, Any] = {
     "executionMode": "test",
     "agent": {
         "enabled": False,
-        "provider": "qwen",
+        "provider": "bailian",
         "providerName": "阿里云百炼",
         "model": "qwen3.8-flash",
         "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -87,8 +94,11 @@ def _write_json(path: Path, value: Any) -> None:
 def get_product_config(*, public: bool = True) -> dict:
     stored = _read_json(CONFIG_PATH, {})
     config = _deep_merge(DEFAULT_PRODUCT_CONFIG, stored if isinstance(stored, dict) else {})
+    config['agent'].pop('apiKey', None)
+    if config['agent'].get('provider') == 'qwen':
+        config['agent']['provider'] = 'bailian'
     if public:
-        config["agent"]["hasApiKey"] = bool(get_api_key())
+        config["agent"]["hasApiKey"] = bool(get_api_key(config['agent']['provider']))
     return config
 
 
@@ -101,10 +111,18 @@ def save_product_config(update: dict, *, replace_strategy: bool = False) -> dict
         merged["strategy"] = copy.deepcopy(update["strategy"])
     if replace_strategy and isinstance(update.get("candidateProfile"), dict):
         merged["candidateProfile"] = copy.deepcopy(update["candidateProfile"])
-    # 密钥只能写入单独的本地 secrets 文件，绝不进入普通配置和 Git。
+    # 密钥只写入系统密钥库，绝不进入普通配置和 Git。
     agent_update = update.get("agent") if isinstance(update, dict) else None
+    provider = merged.get('agent', {}).get('provider', 'bailian')
+    if provider == 'qwen':
+        provider = 'bailian'
+        merged['agent']['provider'] = provider
+    get_provider(provider)
+    merged['agent']['providerName'] = get_provider(provider).name
+    merged['agent']['baseUrl'] = get_provider(provider).chat_url
     if isinstance(agent_update, dict) and "apiKey" in agent_update:
-        set_api_key(str(agent_update.get("apiKey") or ""))
+        if str(agent_update.get('apiKey') or '').strip():
+            set_api_key(str(agent_update['apiKey']), provider)
     merged.get("agent", {}).pop("apiKey", None)
     merged.get("agent", {}).pop("hasApiKey", None)
     if merged.get("executionMode") not in {"test", "live"}:
@@ -113,25 +131,39 @@ def save_product_config(update: dict, *, replace_strategy: bool = False) -> dict
     return get_product_config(public=True)
 
 
-def get_api_key() -> str:
-    secrets = _read_json(SECRETS_PATH, {})
-    return str(secrets.get("qwenApiKey") or "") if isinstance(secrets, dict) else ""
-
-
-def set_api_key(value: str) -> None:
-    secrets = _read_json(SECRETS_PATH, {})
-    if not isinstance(secrets, dict):
-        secrets = {}
-    if value.strip():
-        secrets["qwenApiKey"] = value.strip()
-    else:
-        secrets.pop("qwenApiKey", None)
-    _write_json(SECRETS_PATH, secrets)
+def _keyring_call(method: str, provider: str, *args):
+    get_provider(provider)
     try:
-        SECRETS_PATH.chmod(0o600)
-    except OSError:
-        # Windows 等平台可能不支持 POSIX 权限；文件仍只位于被 Git 忽略的本地目录。
-        pass
+        return getattr(keyring, method)('resume-agent', provider, *args)
+    except Exception as exc:
+        raise KeyringUnavailableError('系统密钥库不可用，请解锁登录密钥环后重试') from exc
+
+
+def get_api_key(provider: str = 'bailian') -> str:
+    value = _keyring_call('get_password', provider)
+    if provider == 'bailian' and SECRETS_PATH.exists():
+        secrets = _read_json(SECRETS_PATH, {})
+        legacy = str(secrets.get('qwenApiKey') or '') if isinstance(secrets, dict) else ''
+        if legacy and not value:
+            _keyring_call('set_password', provider, legacy)
+            value = _keyring_call('get_password', provider)
+            if value != legacy:
+                raise KeyringUnavailableError('密钥迁移未完成，请解锁系统密钥库后重试')
+        if legacy and value:
+            # 仅当已确认密钥进入系统密钥库，才移除旧明文。
+            if len(secrets) == 1:
+                SECRETS_PATH.unlink()
+            else:
+                secrets.pop('qwenApiKey', None)
+                _write_json(SECRETS_PATH, secrets)
+    return value or ''
+
+
+def set_api_key(value: str, provider: str = 'bailian') -> None:
+    if value.strip():
+        _keyring_call('set_password', provider, value.strip())
+    else:
+        _keyring_call('delete_password', provider)
 
 
 def list_resumes() -> list[dict]:

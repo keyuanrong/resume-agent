@@ -172,18 +172,22 @@
         <div id="agentPanel" class="hidden">
           <div class="notice">
             <strong>Agent 会读取简历内容</strong>
-            <span>简历将发送到所选模型服务商；API Key 只保存在本机后端。</span>
+            <span>简历会发送到所选模型服务商；API Key 保存在本机系统密钥库，页面不会回显。</span>
+          </div>
+          <div class="provider-actions" role="group" aria-label="模型服务商">
+            <button class="button secondary" type="button" data-agent-provider="bailian">阿里云百炼</button>
+            <button class="button secondary" type="button" data-agent-provider="deepseek">DeepSeek</button>
           </div>
           <div class="form-grid compact">
-            <label>服务商
-              <select id="agentProvider" disabled><option value="qwen">阿里云百炼</option></select>
-            </label>
-            <label>模型
-              <input id="agentModel" value="qwen3.8-flash">
+            <label class="full">模型名称
+              <input id="agentModel" list="agentModelOptions" value="qwen3.8-flash" autocomplete="off">
+              <datalist id="agentModelOptions"></datalist>
             </label>
             <label class="full">API Key
-              <input id="agentApiKey" type="password" autocomplete="off" placeholder="sk-...（已配置时可留空）">
+              <input id="agentApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="已配置时可留空；输入后不会回显">
             </label>
+            <button id="loadAgentModelsButton" class="button secondary full" type="button">查询当前服务商的可用模型</button>
+            <small id="agentModelHint" class="full">选择服务商，填写该服务商的 API Key 后查询模型。</small>
             <button id="saveAgentButton" class="button secondary full" type="button">保存 Agent 设置</button>
           </div>
 

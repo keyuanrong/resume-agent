@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -44,14 +46,23 @@ def list_provider_models(provider_id: str, api_key: str) -> list[dict]:
     provider = get_provider(provider_id)
     if not api_key:
         raise ModelDiscoveryError('请先配置此服务商的 API Key')
+    models_url = provider.models_url
+    if provider_id == 'bailian':
+        workspace_id = os.environ.get('DASHSCOPE_WORKSPACE_ID', '').strip()
+        if workspace_id:
+            if not re.fullmatch(r'ws-[a-zA-Z0-9-]+', workspace_id):
+                raise ModelDiscoveryError('DASHSCOPE_WORKSPACE_ID 格式不正确')
+            models_url = f'https://{workspace_id}.cn-beijing.maas.aliyuncs.com/api/v1/models?page_no=1&page_size=100'
     request = urllib.request.Request(
-        provider.models_url,
+        models_url,
         headers={'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'},
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             body = json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as exc:
+        if provider_id == 'bailian' and exc.code == 404 and not os.environ.get('DASHSCOPE_WORKSPACE_ID'):
+            raise ModelDiscoveryError('百炼模型列表需要业务空间 ID，请设置 DASHSCOPE_WORKSPACE_ID 后重试') from exc
         raise ModelDiscoveryError(f'获取模型列表失败（HTTP {exc.code}）') from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise ModelDiscoveryError('无法获取模型列表，请检查网络和 API Key') from exc

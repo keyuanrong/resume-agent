@@ -1,5 +1,23 @@
-const state = { config: null, resumes: [], questions: [], strategy: null, localDirections: [], uploadQueue: [], uploading: false, activeResumeId: null };
+const state = { config: null, resumes: [], questions: [], strategy: null, localDirections: [], uploadQueue: [], uploading: false, activeResumeId: null, agentProvider: 'bailian' };
 const $ = (id) => document.getElementById(id);
+const agentProviderNames = {bailian:'阿里云百炼', deepseek:'DeepSeek'};
+const suggestedModels = {bailian:['qwen3.8-flash', 'qwen3.7-flash'], deepseek:['deepseek-chat', 'deepseek-reasoner']};
+
+function showModelOptions(models) {
+  const list = $('agentModelOptions'); list.replaceChildren();
+  models.forEach(item => { const option = document.createElement('option'); option.value = item.id; option.label = item.name || item.id; list.appendChild(option); });
+}
+
+function selectAgentProvider(provider, keepModel = false) {
+  state.agentProvider = provider;
+  document.querySelectorAll('[data-agent-provider]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.agentProvider === provider));
+  });
+  if (!keepModel) $('agentModel').value = '';
+  $('agentApiKey').value = '';
+  showModelOptions(suggestedModels[provider].map(id => ({id})));
+  $('agentModelHint').textContent = `当前服务商：${agentProviderNames[provider]}。输入 API Key 后可查询可用模型。`;
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
@@ -71,6 +89,7 @@ function renderMode() {
 
 function renderConfig() {
   const c = state.config; const s = c.strategy || {}; const a = c.agent || {};
+  selectAgentProvider(a.provider === 'deepseek' ? 'deepseek' : 'bailian', true);
   $('agentToggle').checked = c.mode === 'agent' && !!a.enabled;
   $('executionMode').value = c.executionMode || 'test';
   $('executionModeHint').textContent = (c.executionMode || 'test') === 'test'
@@ -286,12 +305,30 @@ $('rebuildLocalStrategyButton').addEventListener('click', async () => {
   finally { button.disabled = false; button.textContent = '按这个方向重建词库'; }
 });
 
+document.querySelectorAll('[data-agent-provider]').forEach(button => button.addEventListener('click', () => selectAgentProvider(button.dataset.agentProvider)));
+
+$('loadAgentModelsButton').addEventListener('click', async () => {
+  const button = $('loadAgentModelsButton'); button.disabled = true;
+  try {
+    const result = await api('/api/agent/models', {method:'POST', body:JSON.stringify({provider:state.agentProvider, apiKey:$('agentApiKey').value.trim()})});
+    showModelOptions(result.models);
+    $('agentModelHint').textContent = `已查询到 ${result.models.length} 个模型，请在模型名称中自行选择。`;
+  } catch (e) {
+    $('agentModelHint').textContent = '查询失败。可输入已知模型名称，再保存并测试。';
+    toast(e.message, true);
+  } finally { button.disabled = false; }
+});
+
 $('saveAgentButton').addEventListener('click', async () => {
   const apiKey = $('agentApiKey').value.trim();
-  const agent = {enabled:true, provider:'qwen', providerName:'阿里云百炼', model:$('agentModel').value.trim() || 'qwen3.8-flash'};
+  const model = $('agentModel').value.trim();
+  if (!model) return toast('请先填写或选择模型名称', true);
+  const agent = {enabled:true, provider:state.agentProvider, model};
   if (apiKey) agent.apiKey = apiKey;
-  state.config = await api('/api/product-config', {method:'PUT', body:JSON.stringify({mode:'agent', agent})});
-  $('agentApiKey').value = ''; renderConfig(); toast('Agent 设置已保存到本机');
+  try {
+    state.config = await api('/api/product-config', {method:'PUT', body:JSON.stringify({mode:'agent', agent})});
+    $('agentApiKey').value = ''; renderConfig(); toast('Agent 设置已保存到系统密钥库');
+  } catch (e) { toast(e.message, true); }
 });
 
 function renderUploadQueue() {

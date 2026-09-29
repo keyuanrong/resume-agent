@@ -17,6 +17,8 @@ from agent_service import AgentConfigurationError, AgentRequestError, get_agent
 from local_strategy_service import analyze_local_resume, build_scoring_from_strategy, generate_local_strategy
 from platforms import list_platforms
 from product_store import get_product_config, list_resumes, save_product_config
+from product_store import get_api_key, KeyringUnavailableError
+from model_providers import get_provider, list_provider_models, ModelDiscoveryError
 from resume_service import delete_resume, get_resume_for_agent, get_resume_text_local, save_resume
 
 
@@ -429,12 +431,36 @@ async def product_asset(asset_name: str):
 
 @app.get('/api/product-config', summary='获取产品配置')
 async def api_get_product_config():
-    return get_product_config(public=True)
+    try:
+        return get_product_config(public=True)
+    except KeyringUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.put('/api/product-config', summary='更新产品配置')
 async def api_update_product_config(payload: dict = Body(...)):
-    return save_product_config(payload)
+    try:
+        return save_product_config(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyringUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post('/api/agent/models', summary='查询服务商可用模型')
+async def api_agent_models(payload: dict = Body(...)):
+    provider = str(payload.get('provider') or '')
+    try:
+        get_provider(provider)
+        api_key = str(payload.get('apiKey') or '').strip() or get_api_key(provider)
+        models = await asyncio.to_thread(list_provider_models, provider, api_key)
+        return {'provider': provider, 'models': models}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyringUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ModelDiscoveryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get('/api/platforms', summary='获取招聘平台能力')
