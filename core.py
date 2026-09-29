@@ -106,10 +106,39 @@ def __find_terms(text: str, keywords: list[str]) -> list[str]:
     return matches
 
 
-def evaluateJobMatch(job: str):
+def _scoring_rules(scoring: dict | None = None) -> dict:
+    """返回本次评分使用的词库；未提供时兼容旧版个人配置。"""
+    if scoring:
+        return scoring
+    return {
+        'title_block_keywords': Config.title_block_keywords,
+        'title_penalty_keywords': Config.title_penalty_keywords,
+        'title_strong_keywords': Config.title_strong_keywords,
+        'title_medium_keywords': Config.title_medium_keywords,
+        'detail_infra_keywords': Config.detail_infra_keywords,
+        'detail_support_keywords': Config.detail_support_keywords,
+        'detail_negative_keywords': Config.detail_negative_keywords,
+        'title_core_keywords': Config.title_core_keywords,
+        'explicit_vla_keywords': Config.explicit_vla_keywords,
+        'detail_policy_model_keywords': Config.detail_policy_model_keywords,
+        'detail_robot_context_keywords': Config.detail_robot_context_keywords,
+        'detail_model_work_keywords': Config.detail_model_work_keywords,
+        'detail_rl_dominant_keywords': Config.detail_rl_dominant_keywords,
+        'detail_data_engineering_keywords': Config.detail_data_engineering_keywords,
+        'detail_localization_keywords': Config.detail_localization_keywords,
+        'title_data_engineering_keywords': Config.title_data_engineering_keywords,
+        'title_control_keywords': Config.title_control_keywords,
+        'title_localization_keywords': Config.title_localization_keywords,
+    }
+
+
+def evaluateJobMatch(job: str, scoring: dict | None = None):
     """返回岗位匹配明细，便于日志排查。"""
+    rules = _scoring_rules(scoring)
+    score_map = lambda name: rules.get(name, {}) if isinstance(rules.get(name), dict) else {}
+    term_list = lambda name: rules.get(name, []) if isinstance(rules.get(name), list) else []
     title, detail = __extract_job_fields(job)
-    title_block_matches = __find_matches(title, Config.title_block_keywords)
+    title_block_matches = __find_matches(title, score_map('title_block_keywords'))
     if title_block_matches:
         return {
             'title': title,
@@ -133,8 +162,8 @@ def evaluateJobMatch(job: str):
             'reason': '岗位名称命中强负向关键词',
         }
 
-    title_strong_matches = __find_matches(title, Config.title_strong_keywords)
-    title_medium_matches = __find_matches(title, Config.title_medium_keywords)
+    title_strong_matches = __find_matches(title, score_map('title_strong_keywords'))
+    title_medium_matches = __find_matches(title, score_map('title_medium_keywords'))
     title_match_level = 'none'
     title_keyword = None
     title_score = 0
@@ -160,10 +189,10 @@ def evaluateJobMatch(job: str):
             + [keyword for keyword, _ in title_medium_matches]
         ))
 
-    title_penalty_matches = __find_matches(title, Config.title_penalty_keywords)
-    detail_infra_matches = __find_matches(detail, Config.detail_infra_keywords)
-    detail_support_matches = __find_matches(detail, Config.detail_support_keywords)
-    detail_negative_matches = __find_matches(detail, Config.detail_negative_keywords)
+    title_penalty_matches = __find_matches(title, score_map('title_penalty_keywords'))
+    detail_infra_matches = __find_matches(detail, score_map('detail_infra_keywords'))
+    detail_support_matches = __find_matches(detail, score_map('detail_support_keywords'))
+    detail_negative_matches = __find_matches(detail, score_map('detail_negative_keywords'))
 
     detail_infra_score = min(sum(score for _, score in detail_infra_matches), 24)
     detail_support_score = min(sum(score for _, score in detail_support_matches), 12)
@@ -191,17 +220,17 @@ def evaluateJobMatch(job: str):
     # 这样可避免标题写 VLA 但工作实质是纯 RL/数据管线的误投，也能救回
     # 标题模糊但职责明确包含 π0、ACT、机器人操作与真机部署的岗位。
     all_text = f'{title}\n{detail}'
-    title_core_matches = __find_terms(title, Config.title_core_keywords)
-    explicit_vla_matches = __find_terms(all_text, Config.explicit_vla_keywords)
-    policy_model_matches = __find_terms(detail, Config.detail_policy_model_keywords)
-    robot_context_matches = __find_terms(detail, Config.detail_robot_context_keywords)
-    model_work_matches = __find_terms(detail, Config.detail_model_work_keywords)
-    rl_dominant_matches = __find_terms(detail, Config.detail_rl_dominant_keywords)
-    data_engineering_matches = __find_terms(detail, Config.detail_data_engineering_keywords)
-    localization_matches = __find_terms(detail, Config.detail_localization_keywords)
-    title_data_engineering_matches = __find_terms(title, Config.title_data_engineering_keywords)
-    title_control_matches = __find_terms(title, Config.title_control_keywords)
-    title_localization_matches = __find_terms(title, Config.title_localization_keywords)
+    title_core_matches = __find_terms(title, term_list('title_core_keywords'))
+    explicit_vla_matches = __find_terms(all_text, term_list('explicit_vla_keywords'))
+    policy_model_matches = __find_terms(detail, term_list('detail_policy_model_keywords'))
+    robot_context_matches = __find_terms(detail, term_list('detail_robot_context_keywords'))
+    model_work_matches = __find_terms(detail, term_list('detail_model_work_keywords'))
+    rl_dominant_matches = __find_terms(detail, term_list('detail_rl_dominant_keywords'))
+    data_engineering_matches = __find_terms(detail, term_list('detail_data_engineering_keywords'))
+    localization_matches = __find_terms(detail, term_list('detail_localization_keywords'))
+    title_data_engineering_matches = __find_terms(title, term_list('title_data_engineering_keywords'))
+    title_control_matches = __find_terms(title, term_list('title_control_keywords'))
+    title_localization_matches = __find_terms(title, term_list('title_localization_keywords'))
 
     high_confidence_match = bool(model_work_matches) and (
         (
@@ -309,8 +338,8 @@ def evaluateJobMatch(job: str):
     }
 
 
-def evaluateSingleRouteDelivery(job: str):
-    match_result = evaluateJobMatch(job)
+def evaluateSingleRouteDelivery(job: str, scoring: dict | None = None):
+    match_result = evaluateJobMatch(job, scoring=scoring)
     return {
         **match_result,
         'introduce': Config.introduce,

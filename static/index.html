@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resume Agent 控制台</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">RESUME AGENT</p>
+      <h1>求职任务控制台</h1>
+      <p class="subtitle">配置一次求职策略，由同一套规则和 Agent 驱动招聘平台执行。</p>
+    </div>
+    <div class="header-actions">
+      <a class="button ghost" href="/job-report" target="_blank">处理记录</a>
+      <span id="saveState" class="save-state">配置已加载</span>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="metrics" aria-label="今日概览">
+      <article><span>今日扫描</span><strong id="metricScanned">0</strong></article>
+      <article><span>推荐岗位</span><strong id="metricRecommended">0</strong></article>
+      <article><span>已沟通</span><strong id="metricGreeted">0</strong></article>
+      <article><span>等待审核</span><strong id="metricReview">0</strong></article>
+      <article><span>公司屏蔽</span><strong id="metricBlocked">0</strong></article>
+      <article><span>执行失败</span><strong id="metricFailed">0</strong></article>
+    </section>
+
+    <section class="card resume-first-card">
+      <div class="resume-first-copy">
+        <p class="section-kicker">01 · 上传简历</p>
+        <h2>先让系统了解你的经历</h2>
+        <p class="muted">免费模式在本机解析 PDF、DOCX、TXT 或 Markdown；开启 Agent 后，也可以分析图片简历。</p>
+      </div>
+      <div id="resumeDropzone" class="resume-dropzone" role="button" tabindex="0" aria-label="拖入或选择简历">
+        <input id="resumeFile" class="visually-hidden" type="file" accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp" multiple>
+        <span class="dropzone-icon">＋</span>
+        <strong>拖入简历，或点击选择文件</strong>
+        <small>选择后自动保存到本机 · 支持多个文件 · 最大 12MB/份</small>
+      </div>
+      <div id="uploadQueue" class="upload-queue hidden" aria-live="polite"></div>
+      <div id="resumeList" class="resume-list resume-first-list"><p class="empty">还没有上传简历</p></div>
+    </section>
+
+    <section class="card hero-card">
+      <div>
+        <p class="section-kicker">02 · 选择模式</p>
+        <h2>智能求职 Agent</h2>
+        <p id="modeDescription" class="muted">关闭时完全使用本地规则，不会调用任何模型。</p>
+      </div>
+      <label class="switch" aria-label="启用 Agent">
+        <input id="agentToggle" type="checkbox">
+        <span class="slider"></span>
+      </label>
+    </section>
+
+    <section id="agentIdentity" class="agent-identity hidden">
+      <div><span>服务商</span><strong id="providerLabel">阿里云百炼</strong></div>
+      <div><span>模型</span><strong id="modelLabel">qwen3.8-flash</strong></div>
+      <div><span>密钥</span><strong id="keyLabel">未配置</strong></div>
+      <div><span>自动聊天</span><strong>关闭</strong></div>
+    </section>
+
+    <div class="layout">
+      <section class="card main-card">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">03 · 求职策略</p>
+            <h2 id="strategyTitle">手动规则模式</h2>
+          </div>
+          <span id="strategyStatus" class="pill warning">未确认</span>
+        </div>
+
+        <form id="manualForm" class="form-grid">
+          <div class="local-builder full">
+            <div>
+              <strong>从简历免费生成专用词库</strong>
+              <p>完全在本机解析，不调用 Agent，不产生模型费用。生成后仍可修改。</p>
+            </div>
+            <select id="localResumeSelect"><option value="">请选择已上传简历</option></select>
+            <button id="buildLocalStrategyButton" class="button secondary" type="button">分析这份简历</button>
+            <div id="localDirectionControls" class="local-directions hidden">
+              <label>请选择你真正想投递的方向
+                <select id="localDirectionSelect"></select>
+              </label>
+              <button id="rebuildLocalStrategyButton" class="button primary" type="button">按这个方向重建词库</button>
+              <small>简历中做过的工作不一定是你下一份想做的工作，必须由你确认方向。</small>
+            </div>
+            <div id="localStrategyResult" class="result-box hidden"></div>
+          </div>
+          <label class="full">搜索关键词
+            <textarea id="manualKeywords" rows="3" placeholder="例如：VLA算法实习生、具身智能算法实习生"></textarea>
+            <small>支持逗号或换行分隔，Boss 会按顺序轮换搜索。</small>
+          </label>
+          <label>匹配阈值 <output id="thresholdOutput">80</output>
+            <input id="manualThreshold" type="range" min="0" max="100" value="80">
+          </label>
+          <label>每日处理上限
+            <input id="manualDailyLimit" type="number" min="1" max="1000" value="30">
+          </label>
+          <label>城市
+            <input id="manualCities" placeholder="例如：北京、上海、远程">
+          </label>
+          <label>岗位类型
+            <select id="manualJobType">
+              <option value="">不限</option>
+              <option value="internship">实习</option>
+              <option value="campus">校招</option>
+              <option value="social">社招</option>
+            </select>
+          </label>
+          <label>最低薪资
+            <input id="manualMinimumSalary" placeholder="例如：200元/天、20K">
+          </label>
+          <label class="full">排除岗位或关键词
+            <textarea id="manualExcluded" rows="2" placeholder="例如：销售、SLAM、运动控制"></textarea>
+          </label>
+          <label class="full">简历技能词
+            <textarea id="manualSkills" rows="3" placeholder="例如：LeRobot、ACT、Python、MuJoCo"></textarea>
+            <small>本地分析会自动填写；如果简历里出现了你不想继续从事的技能，可以删掉。</small>
+          </label>
+          <details class="advanced-rules full">
+            <summary>查看和修改评分词库</summary>
+            <div class="form-grid compact">
+              <label class="full">岗位标题加分词
+                <textarea id="manualTitlePositive" rows="5" placeholder="VLA算法实习生:86"></textarea>
+              </label>
+              <label class="full">岗位描述加分词
+                <textarea id="manualDetailPositive" rows="5" placeholder="LeRobot:14"></textarea>
+              </label>
+              <label class="full">岗位标题扣分词
+                <textarea id="manualTitlePenalty" rows="4" placeholder="SLAM:30"></textarea>
+              </label>
+              <label class="full">岗位描述扣分词
+                <textarea id="manualDetailNegative" rows="4" placeholder="路径规划:14"></textarea>
+              </label>
+              <small class="full">每行格式为“关键词:分数”。排除词会直接拦截岗位；加分词和扣分词则参与综合评分。</small>
+            </div>
+          </details>
+          <label class="full">公司黑名单
+            <textarea id="manualCompanies" rows="2" placeholder="输入公司全称或简称"></textarea>
+          </label>
+          <label class="full">固定打招呼语
+            <textarea id="manualGreeting" rows="3" maxlength="240" placeholder="您好，我对这个岗位很感兴趣……"></textarea>
+          </label>
+          <label class="full">投递方式
+            <select id="manualDeliveryMode">
+              <option value="screen_only">只筛选，不发送</option>
+              <option value="review" selected>审核后发送</option>
+              <option value="auto">自动发送</option>
+            </select>
+          </label>
+          <label class="full">简历发送方式
+            <select id="manualResumeDelivery">
+              <option value="platform_resume">使用招聘平台已有简历</option>
+              <option value="after_reply">对方回复后再发送</option>
+              <option value="pdf">优先发送 PDF（取决于平台能力）</option>
+              <option value="image">优先发送图片（取决于平台能力）</option>
+            </select>
+            <small>当前 Boss 自动链路只支持选择平台已有简历；PDF/图片会保留为策略偏好，不会冒充已发送。</small>
+          </label>
+          <label class="full">使用的本地简历
+            <select id="manualResumeSelect"><option value="">暂不指定</option></select>
+            <small>本地简历用于 Agent 和策略管理；Boss 平台已有简历仍由 `resumeIndex` 选择。</small>
+          </label>
+          <button class="button primary full" type="submit">保存并启用手动策略</button>
+        </form>
+
+        <div id="agentPanel" class="hidden">
+          <div class="notice">
+            <strong>Agent 会读取简历内容</strong>
+            <span>简历将发送到所选模型服务商；API Key 只保存在本机后端。</span>
+          </div>
+          <div class="form-grid compact">
+            <label>服务商
+              <select id="agentProvider" disabled><option value="qwen">阿里云百炼</option></select>
+            </label>
+            <label>模型
+              <input id="agentModel" value="qwen3.8-flash">
+            </label>
+            <label class="full">API Key
+              <input id="agentApiKey" type="password" autocomplete="off" placeholder="sk-...（已配置时可留空）">
+            </label>
+            <button id="saveAgentButton" class="button secondary full" type="button">保存 Agent 设置</button>
+          </div>
+
+          <div class="step-block">
+            <div class="step-number">1</div>
+            <div class="step-content">
+              <h3>上传简历</h3>
+              <p>先在右侧“简历资产”上传，再选择要交给 Agent 分析的简历。</p>
+              <select id="resumeSelect"><option value="">请选择简历</option></select>
+            </div>
+          </div>
+
+          <div class="step-block">
+            <div class="step-number">2</div>
+            <div class="step-content">
+              <h3>分析简历并生成问题</h3>
+              <button id="analyzeResumeButton" class="button primary" type="button">开始分析</button>
+              <div id="profileResult" class="result-box hidden"></div>
+            </div>
+          </div>
+
+          <div id="questionsBlock" class="step-block hidden">
+            <div class="step-number">3</div>
+            <div class="step-content">
+              <h3>回答补充问题</h3>
+              <div id="questionsList"></div>
+              <button id="buildStrategyButton" class="button primary" type="button">生成最终策略</button>
+            </div>
+          </div>
+
+          <div id="agentStrategyBlock" class="step-block hidden">
+            <div class="step-number">4</div>
+            <div class="step-content">
+              <h3>确认 Agent 策略</h3>
+              <div id="agentStrategyResult" class="result-box"></div>
+              <div id="agentStrategyEditor" class="form-grid compact">
+                <label class="full">搜索关键词<textarea id="agentEditKeywords" rows="2"></textarea></label>
+                <label class="full">排除条件<textarea id="agentEditExcluded" rows="2"></textarea></label>
+                <label class="full">公司黑名单<textarea id="agentEditCompanies" rows="2"></textarea></label>
+                <label>匹配阈值<input id="agentEditThreshold" type="number" min="0" max="100"></label>
+                <label>每日处理上限<input id="agentEditDailyLimit" type="number" min="1" max="1000"></label>
+                <label class="full">招呼语<textarea id="agentEditGreeting" rows="3" maxlength="240"></textarea></label>
+                <label>投递方式
+                  <select id="agentEditDeliveryMode">
+                    <option value="screen_only">只筛选</option><option value="review">审核后发送</option><option value="auto">自动发送</option>
+                  </select>
+                </label>
+                <label>简历方式
+                  <select id="agentEditResumeDelivery">
+                    <option value="platform_resume">平台已有简历</option><option value="after_reply">回复后发送</option><option value="pdf">优先 PDF</option><option value="image">优先图片</option>
+                  </select>
+                </label>
+              </div>
+              <button id="confirmStrategyButton" class="button success" type="button">确认并启用</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-column">
+        <section class="card">
+          <div class="section-heading">
+            <div><p class="section-kicker">04 · 平台</p><h2>招聘平台</h2></div>
+          </div>
+          <div id="platformList" class="platform-list"></div>
+        </section>
+
+        <section class="card run-card">
+          <p class="section-kicker">05 · 测试与执行</p>
+          <h2>开始运行</h2>
+          <p>保存并确认策略后，启动 Tampermonkey 脚本。Boss 已接入；智联支持单岗位人工确认沟通；前程无忧当前仅限测试。</p>
+          <div class="run-setting">
+            <label>运行环境
+              <select id="executionMode">
+                <option value="test">测试模式（推荐）</option>
+                <option value="live">正式模式</option>
+              </select>
+            </label>
+            <span id="executionModeHint">测试模式会运行完整流程，但在发送前强制停止。</span>
+          </div>
+          <a class="button primary full-width" href="https://www.zhipin.com/web/geek/job" target="_blank">打开 Boss 直聘</a>
+          <p class="muted test-entry">智联/前程无忧测试请安装项目中的 <code>multi_platform_test.user.js</code>。</p>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
