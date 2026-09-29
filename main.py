@@ -625,8 +625,14 @@ async def api_agent_build_strategy(payload: dict = Body(...)):
 async def api_confirm_strategy(payload: dict | None = Body(default=None)):
     config = get_product_config(public=False)
     current = dict(config.get('strategy', {}))
+    previous = dict(current)
     if isinstance(payload, dict):
         current.update(payload)
+    if (current.get('source') or config.get('mode')) == 'agent':
+        if isinstance(payload, dict) and 'searchKeywords' in payload and 'targetRoles' not in payload:
+            current['targetRoles'] = payload['searchKeywords']
+        from agent_service import build_agent_scoring
+        current['scoring'] = build_agent_scoring(current, current.get('scoring'), previous)
     strategy = _normalize_strategy(
         current,
         source=current.get('source') or config.get('mode', 'manual'),

@@ -75,6 +75,8 @@ function strategySummary(s) {
     `优先技能：${(s.preferredSkills || []).join('、') || '未设置'}`,
     `标题词库：${Object.keys(s.scoring?.title_strong_keywords || {}).length} 个`,
     `JD词库：${Object.keys(s.scoring?.detail_infra_keywords || {}).length} 个`,
+    `标题软扣分词：${Object.keys(s.scoring?.title_penalty_keywords || {}).length} 个`,
+    `JD软扣分词：${Object.keys(s.scoring?.detail_negative_keywords || {}).length} 个`,
     `自动排除：${(s.excludedKeywords || []).join('、') || '无'}`,
     `城市：${(s.cities || []).join('、') || '不限'}`,
     `匹配阈值：${s.threshold ?? 80}`,
@@ -88,6 +90,10 @@ function renderAgentEditor(s) {
   if (!s) return;
   $('agentEditKeywords').value = lines(s.searchKeywords);
   $('agentEditExcluded').value = lines(s.excludedKeywords);
+  $('agentEditTitlePositive').value = weightedLines(s.scoring?.title_strong_keywords);
+  $('agentEditDetailPositive').value = weightedLines(s.scoring?.detail_infra_keywords);
+  $('agentEditTitlePenalty').value = weightedLines(s.scoring?.title_penalty_keywords);
+  $('agentEditDetailNegative').value = weightedLines(s.scoring?.detail_negative_keywords);
   $('agentEditCompanies').value = lines(s.companyBlockKeywords);
   $('agentEditThreshold').value = s.threshold ?? 80;
   $('agentEditDailyLimit').value = s.dailyLimit || 30;
@@ -504,6 +510,13 @@ $('confirmStrategyButton').addEventListener('click', async () => {
     companyBlockKeywords:$('agentEditCompanies').value, threshold:Number($('agentEditThreshold').value),
     dailyLimit:Number($('agentEditDailyLimit').value), greeting:$('agentEditGreeting').value,
     deliveryMode:$('agentEditDeliveryMode').value, resumeDelivery:$('agentEditResumeDelivery').value,
+    scoring:{
+      ...(state.strategy?.scoring || state.config?.strategy?.scoring || {}),
+      title_strong_keywords:parseWeightedLines($('agentEditTitlePositive').value),
+      detail_infra_keywords:parseWeightedLines($('agentEditDetailPositive').value),
+      title_penalty_keywords:parseWeightedLines($('agentEditTitlePenalty').value),
+      detail_negative_keywords:parseWeightedLines($('agentEditDetailNegative').value),
+    },
   };
   state.config=await api('/api/strategy/confirm',{method:'POST',body:JSON.stringify(edits)}); renderConfig(); toast('Agent 策略已确认并启用');
 });

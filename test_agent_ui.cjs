@@ -29,12 +29,17 @@ function page() {
   });
   const timers = [];
   const requests = [];
+  const confirmations = [];
   const document = {
     getElementById: get,
     createElement: () => new Element(),
     querySelectorAll: selector => selector === '[data-agent-provider]' ? providers : [],
   };
   const fetch = (url, options) => {
+    if (url === '/api/strategy/confirm') {
+      confirmations.push(JSON.parse(options.body));
+      return Promise.resolve({ok:true, headers:{get:()=>'application/json'}, json:async()=>({mode:'agent', agent:{}, strategy:{}})});
+    }
     if (url !== '/api/agent/models') return new Promise(() => {});
     requests.push(JSON.parse(options.body));
     return Promise.resolve({ok:true, headers:{get:()=>'application/json'}, json:async()=>({models:[
@@ -44,7 +49,7 @@ function page() {
   };
   const context = vm.createContext({document, fetch, setTimeout:fn=>{timers.push(fn); return timers.length;}, clearTimeout:()=>{}, console});
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'static/app.js'), 'utf8'), context);
-  return {get, providers, timers, requests, context};
+  return {get, providers, timers, requests, confirmations, context};
 }
 
 test('entering a key loads model choices for the selected provider without selecting one', async () => {
@@ -74,4 +79,18 @@ test('resume analysis displays the proposed search terms alongside the summary',
     : ''`, ui.context);
   assert.match(output, /初步岗位搜索词[\s\S]*VLA算法实习生/);
   assert.match(output, /技能匹配词[\s\S]*LeRobot/);
+});
+
+test('agent editor shows and confirms weighted positive and soft negative lists', async () => {
+  const ui = page();
+  const scoring = {
+    title_strong_keywords:{'VLA算法':92}, detail_infra_keywords:{'π0':16},
+    title_penalty_keywords:{'纯SLAM':35}, detail_negative_keywords:{'传统定位建图':16},
+  };
+  vm.runInContext(`state.config={mode:'agent', agent:{enabled:true}, strategy:{}}; renderAgentEditor({scoring:${JSON.stringify(scoring)}})`, ui.context);
+  assert.equal(ui.get('agentEditTitlePositive').value, 'VLA算法:92');
+  assert.equal(ui.get('agentEditTitlePenalty').value, '纯SLAM:35');
+  await ui.get('confirmStrategyButton').emit('click');
+  assert.equal(ui.confirmations[0].scoring.title_strong_keywords['VLA算法'], 92);
+  assert.equal(ui.confirmations[0].scoring.detail_negative_keywords['传统定位建图'], 16);
 });

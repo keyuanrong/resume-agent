@@ -226,6 +226,11 @@
               <div id="agentStrategyEditor" class="form-grid compact">
                 <label class="full">搜索关键词<textarea id="agentEditKeywords" rows="2"></textarea></label>
                 <label class="full">排除条件<textarea id="agentEditExcluded" rows="2"></textarea></label>
+                <p class="full">岗位按标题和职位描述中的词加分、扣分。每行填写“词:权重”；软扣分不会直接排除岗位。</p>
+                <label class="full">标题正向词（加分）<textarea id="agentEditTitlePositive" rows="4"></textarea></label>
+                <label class="full">职位描述正向词（加分）<textarea id="agentEditDetailPositive" rows="4"></textarea></label>
+                <label class="full">标题反向词（软扣分）<textarea id="agentEditTitlePenalty" rows="4"></textarea></label>
+                <label class="full">职位描述反向词（软扣分）<textarea id="agentEditDetailNegative" rows="4"></textarea></label>
                 <label class="full">公司黑名单<textarea id="agentEditCompanies" rows="2"></textarea></label>
                 <label>匹配阈值<input id="agentEditThreshold" type="number" min="0" max="100"></label>
                 <label>每日处理上限<input id="agentEditDailyLimit" type="number" min="1" max="1000"></label>

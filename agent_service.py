@@ -9,6 +9,7 @@ from typing import Any
 
 from product_store import KeyringUnavailableError, get_api_key, get_product_config
 from model_providers import get_provider
+from local_strategy_service import build_scoring_from_strategy
 
 
 class AgentConfigurationError(RuntimeError):
@@ -46,6 +47,54 @@ def _answer_terms(value: Any) -> list[str]:
     else:
         parts = re.split(r'[,，、;；\n]+', str(value or ''))
     return list(dict.fromkeys(str(part).strip() for part in parts if str(part).strip()))
+
+
+def build_agent_scoring(strategy: dict, proposed: Any, previous: dict | None = None) -> dict:
+    """合并 Agent 建议与最终岗位方向；硬排除只由用户明确指定。"""
+    strategy = dict(strategy)
+    for field in ('searchKeywords', 'targetRoles', 'preferredSkills', 'excludedKeywords'):
+        strategy[field] = _answer_terms(strategy.get(field))
+    baseline = build_scoring_from_strategy(strategy)
+    proposed = proposed if isinstance(proposed, dict) else {}
+    previous = previous if isinstance(previous, dict) else {}
+    old_roles = set(_answer_terms(previous.get('searchKeywords')) + _answer_terms(previous.get('targetRoles')))
+    new_roles = set(_answer_terms(strategy.get('searchKeywords')) + _answer_terms(strategy.get('targetRoles')))
+    excluded = set(_answer_terms(strategy.get('excludedKeywords')))
+    removed_exclusions = set(_answer_terms(previous.get('excludedKeywords'))) - excluded
+    limits = {
+        'title_strong_keywords': 100, 'title_medium_keywords': 75,
+        'detail_infra_keywords': 30, 'detail_support_keywords': 20,
+        'title_penalty_keywords': 45, 'detail_negative_keywords': 36,
+    }
+    for field, limit in limits.items():
+        source = proposed.get(field)
+        if not isinstance(source, dict):
+            continue
+        cleaned = {}
+        for raw_term, raw_weight in list(source.items())[:50]:
+            term = str(raw_term).strip()
+            if not term or len(term) > 60 or term in excluded:
+                continue
+            if field in {'title_penalty_keywords', 'detail_negative_keywords'} and term in removed_exclusions:
+                continue
+            if field.startswith('title_') and field not in {'title_penalty_keywords'} and term in old_roles - new_roles:
+                continue
+            try:
+                weight = int(raw_weight)
+            except (TypeError, ValueError):
+                continue
+            if weight > 0:
+                cleaned[term] = max(1, min(limit, weight))
+        baseline[field].update(cleaned)
+    # 搜索岗位始终保留在标题正向词表；显式排除不得被模型改成正向词。
+    for field in ('title_strong_keywords', 'title_medium_keywords', 'detail_infra_keywords', 'detail_support_keywords'):
+        for term in excluded:
+            baseline[field].pop(term, None)
+    for field in ('title_penalty_keywords', 'detail_negative_keywords'):
+        for term in new_roles:
+            baseline[field].pop(term, None)
+    baseline['title_block_keywords'] = {term: 100 for term in _answer_terms(strategy.get('excludedKeywords'))}
+    return baseline
 
 
 def _strategy_questions(profile: dict) -> list[dict]:
@@ -135,6 +184,11 @@ class QwenAgent:
             "searchKeywords 必须是适合在招聘平台搜索的岗位名称短语，而非单个技能词；"
             "preferredSkills 是简历有证据的技术词；excludedKeywords 只放用户明确排除的方向，不凭猜测硬拦截。"
             "城市、薪资、公司规模、岗位性质和经验要求由招聘网站职位信息提供，不根据简历臆测筛选限制。"
+            "draftStrategy.scoring 须包含带整数权重的 title_strong_keywords、detail_infra_keywords、"
+            "title_penalty_keywords、detail_negative_keywords 四个对象。前两组为标题和职位描述加分词，"
+            "后两组为相邻但不适合方向的标题和职责扣分词；仅依据简历和目标岗位推断，避免泛词。"
+            "正向标题权重 60-100，描述加分 1-30，标题扣分 1-45，描述扣分 1-36。"
+            "不要生成 title_block_keywords；只有用户明确拒绝的方向才会硬排除。"
         )
         instruction = (
             "分析这份简历，给出候选人画像和初步岗位词表；不提出面试、Offer、入职时间等问题。"
@@ -161,6 +215,9 @@ class QwenAgent:
                 if not _unsupported_future_risk(str(risk))
             ]
         result['profile'] = profile
+        draft = result.get('draftStrategy') if isinstance(result.get('draftStrategy'), dict) else {}
+        draft['scoring'] = build_agent_scoring(draft, draft.get('scoring'))
+        result['draftStrategy'] = draft
         result['questions'] = _strategy_questions(profile)
         return result
 
@@ -171,14 +228,19 @@ class QwenAgent:
             "回答中的 targetRoles 决定目标岗位和搜索词，preferredSkills 决定技能词，"
             "excludedKeywords 决定硬排除词。招聘网站能提供的城市、薪资、岗位性质、公司规模和经验要求不要向用户追问或猜测。"
             "只使用简历有证据的技能；不要把明确排除的方向写入正向搜索词。"
+            "scoring 必须包含带整数权重的 title_strong_keywords、detail_infra_keywords、"
+            "title_penalty_keywords、detail_negative_keywords；按最终岗位方向和简历重新生成。"
+            "标题正向 60-100，描述正向 1-30，标题软扣分 1-45，描述软扣分 1-36。"
+            "软扣分用于方向相邻但不够合适的岗位，不等于排除；不要生成 title_block_keywords。"
             "只返回 JSON 对象，字段为 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、"
-            "greeting、dailyLimit、deliveryMode、resumeDelivery、targetRoles、preferredSkills、cities、jobType、minimumSalary。"
+            "greeting、dailyLimit、deliveryMode、resumeDelivery、targetRoles、preferredSkills、cities、jobType、minimumSalary、scoring。"
         )
         data = {"profile": profile, "draftStrategy": draft, "questions": questions, "answers": answers}
         result = self._request([
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
         ])
+        model_roles = _answer_terms(result.get('searchKeywords')) + _answer_terms(result.get('targetRoles'))
         for field in ('targetRoles', 'preferredSkills'):
             terms = _answer_terms(answers.get(field))
             if terms:
@@ -190,8 +252,14 @@ class QwenAgent:
             result['searchKeywords'] = result['targetRoles'][:8]
         result['jobType'] = str(answers.get('jobType') or '').strip()
         result['minimumSalary'] = str(answers.get('minimumSalary') or '').strip()
-        # 词表必须根据最终确认的方向重新生成，不能沿用模型草稿中的评分词。
-        result.pop('scoring', None)
+        proposal = result.get('scoring') if isinstance(result.get('scoring'), dict) else {}
+        draft_scoring = draft.get('scoring') if isinstance(draft, dict) else {}
+        for field in ('title_penalty_keywords', 'detail_negative_keywords'):
+            if field not in proposal and isinstance(draft_scoring, dict):
+                proposal[field] = draft_scoring.get(field)
+        old = dict(draft) if isinstance(draft, dict) else {}
+        old['searchKeywords'] = _answer_terms(old.get('searchKeywords')) + model_roles
+        result['scoring'] = build_agent_scoring(result, proposal, old)
         return result
 
     def evaluate_job(self, profile: dict, strategy: dict, job: dict, rule_result: dict) -> dict:
