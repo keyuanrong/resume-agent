@@ -23,7 +23,6 @@
 **Files:**
 - Create: `model_providers.py`
 - Create: `test_agent_configuration.py`
-- Modify: `main.py`（新增 `/api/agent/models`）
 
 **Interfaces:**
 - `get_provider(provider_id: str) -> Provider`：只返回 `bailian` 或 `deepseek` 的固定端点。
@@ -31,13 +30,14 @@
 
 - [ ] **Step 1: 写失败测试。** 在 `test_agent_configuration.py` 用 `unittest` 和模拟的 `urllib.request.urlopen` 响应，分别验证百炼的 `output.models[]` 和 DeepSeek 的 `data[]` 解析为统一结构；未知服务商抛错；请求仅指向选中服务商。
 - [ ] **Step 2: 运行 `PYTHONDONTWRITEBYTECODE=1 python -m unittest -v test_agent_configuration.py`，确认因模块/接口不存在而失败。**
-- [ ] **Step 3: 实现固定注册表、两个列表解析函数和只返回非敏感字段的 FastAPI 路由。** 百炼列表先用 `https://dashscope.aliyuncs.com/api/v1/models`；若服务端不支持，明确提示无法自动列出且保留内置候选，不猜测可用型号。DeepSeek 用 `https://api.deepseek.com/models`。请求超时、401 和异常响应转成无 Key 的错误文本。
+- [ ] **Step 3: 实现固定注册表与两个列表解析函数。** 百炼列表先用 `https://dashscope.aliyuncs.com/api/v1/models`；若服务端不支持，明确提示无法自动列出且保留内置候选，不猜测可用型号。DeepSeek 用 `https://api.deepseek.com/models`。请求超时、401 和异常响应转成无 Key 的错误文本。
 - [ ] **Step 4: 重跑测试，确认通过；提交本任务。**
 
 ### Task 2: 系统密钥库与旧 Key 迁移
 
 **Files:**
 - Modify: `product_store.py`
+- Modify: `main.py`（新增 `/api/agent/models`）
 - Modify: `requirements.txt`（加入 `keyring==25.7.0`）
 - Modify: `test_agent_configuration.py`
 
@@ -47,7 +47,7 @@
 
 - [ ] **Step 1: 写失败测试。** 用替身密钥库验证不同服务商 Key 隔离、公开配置不含 Key、密钥库写入失败不写明文、旧 Key 成功写入后删除文件、迁移失败保留旧文件。
 - [ ] **Step 2: 运行上述测试，确认各测试因现有文件存储行为而失败。**
-- [ ] **Step 3: 实现密钥库存取和一次性迁移。** 使用服务名 `resume-agent`、账户名 `bailian/deepseek`；检查无可用后端时抛可读错误；先完成写入并校验，再删除旧文件；不在响应或日志中包含 Key。
+- [ ] **Step 3: 实现密钥库存取、一次性迁移和只返回非敏感字段的 FastAPI 模型列表路由。** 使用服务名 `resume-agent`、账户名 `bailian/deepseek`；检查无可用后端时抛可读错误；先完成写入并校验，再删除旧文件；不在响应或日志中包含 Key。
 - [ ] **Step 4: 重跑测试，确认通过；提交本任务。**
 
 ### Task 3: 推理调用按服务商路由
