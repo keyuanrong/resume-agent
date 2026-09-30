@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         goodJobs
 // @namespace    http://tampermonkey.net/
-// @version      2026-09-25
+// @version      2026-09-30
 // @description  goodJobs篡改猴插件
 // @match        https://www.zhipin.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=zhipin.com
@@ -1332,15 +1332,12 @@
                         score: decision.score,
                         resumeIndex: decision.resumeIndex,
                     });
-                    // “只筛选”和“审核后发送”模式只记录推荐结果，不自动触发平台沟通。
+                    // 筛选不发送模式只记录推荐结果，不自动触发平台沟通。
                     if (decision.score >= OPTIONS.thread && decision.autoSend === false) {
                         rememberCheckedJob(href);
-                        const screenOnly = decision.decisionMode === 'screen_only';
-                        logger.add(screenOnly
-                            ? `职位 [${jobInfo.title}] 达到推荐线，已记录结果，不自动发送`
-                            : `职位 [${jobInfo.title}] 达到推荐线，已进入人工审核，不自动发送`);
+                        logger.add(`职位 [${jobInfo.title}] 达到推荐线，已记录结果，不自动发送`);
                         await logAction({
-                            action: screenOnly ? 'job_screened_only' : 'job_requires_review',
+                            action: 'job_screened_only',
                             scene: 'search',
                             decisionId: decision.decisionId,
                             company: jobInfo.company,

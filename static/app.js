@@ -81,8 +81,7 @@ function strategySummary(s) {
     `自动排除：${(s.excludedKeywords || []).join('、') || '无'}`,
     `每个搜索词查看数：${s.jobsPerKeyword ?? 20}`,
     `匹配阈值：${s.threshold ?? 80}`,
-    `投递方式：${{screen_only:'只筛选',review:'审核后发送',auto:'自动发送'}[s.deliveryMode] || '审核后发送'}`,
-    `简历方式：${{platform_resume:'平台已有简历',after_reply:'回复后发送',pdf:'优先 PDF',image:'优先图片'}[s.resumeDelivery] || '平台已有简历'}`,
+    `投递方式：${s.deliveryMode === 'auto' ? '自动发送' : '筛选不发送'}`,
   ].join('\n');
 }
 
@@ -97,8 +96,7 @@ function renderAgentEditor(s) {
   $('agentEditCompanies').value = lines(s.companyBlockKeywords);
   $('agentEditThreshold').value = s.threshold ?? 80;
   $('agentEditJobsPerKeyword').value = s.jobsPerKeyword ?? 20;
-  $('agentEditDeliveryMode').value = s.deliveryMode || 'review';
-  $('agentEditResumeDelivery').value = s.resumeDelivery || 'platform_resume';
+  $('agentEditDeliveryMode').value = s.deliveryMode === 'auto' ? 'auto' : 'screen_only';
 }
 
 function renderAgentDirections(directions, selected) {
@@ -146,8 +144,7 @@ function renderConfig() {
   $('manualCompanies').value = lines(s.companyBlockKeywords);
   $('manualThreshold').value = s.threshold ?? 80; $('thresholdOutput').textContent = s.threshold ?? 80;
   $('manualJobsPerKeyword').value = s.jobsPerKeyword ?? 20;
-  $('manualDeliveryMode').value = s.deliveryMode || 'review';
-  $('manualResumeDelivery').value = s.resumeDelivery || 'platform_resume';
+  $('manualDeliveryMode').value = s.deliveryMode === 'auto' ? 'auto' : 'screen_only';
   $('strategyStatus').textContent = s.confirmed ? '已确认' : '未确认';
   $('strategyStatus').className = `pill ${s.confirmed ? 'success' : 'warning'}`;
   renderMode();
@@ -195,8 +192,8 @@ async function loadPlatforms() {
 }
 
 function renderResumes() {
-  const list = $('resumeList'); const select = $('resumeSelect'); const manualSelect = $('manualResumeSelect'); const localSelect = $('localResumeSelect');
-  list.innerHTML = ''; select.innerHTML = '<option value="">请选择简历</option>'; manualSelect.innerHTML = '<option value="">暂不指定</option>'; localSelect.innerHTML = '<option value="">请选择已上传简历</option>';
+  const list = $('resumeList'); const select = $('resumeSelect'); const localSelect = $('localResumeSelect');
+  list.innerHTML = ''; select.innerHTML = '<option value="">请选择简历</option>'; localSelect.innerHTML = '<option value="">请选择已上传简历</option>';
   if (!state.resumes.length) list.innerHTML = '<p class="empty">还没有上传简历</p>';
   state.resumes.forEach(r => {
     const item = document.createElement('div'); item.className = `resume-item${state.activeResumeId === r.id ? ' selected' : ''}`; item.dataset.resumeId = r.id;
@@ -210,16 +207,15 @@ function renderResumes() {
     item.addEventListener('click', event => { if (!event.target.closest('.resume-remove')) choose(); });
     remove.addEventListener('click', async event => { event.stopPropagation(); await removeResume(r); });
     const option = document.createElement('option'); option.value = r.id; option.textContent = r.name; select.appendChild(option);
-    manualSelect.appendChild(option.cloneNode(true));
     localSelect.appendChild(option.cloneNode(true));
   });
   const selected = state.activeResumeId || state.config?.strategy?.resumeId;
-  if (selected) { select.value = selected; manualSelect.value = selected; localSelect.value = selected; }
+  if (selected) { select.value = selected; localSelect.value = selected; }
 }
 
 function selectResume(resumeId) {
   state.activeResumeId = resumeId;
-  ['resumeSelect','manualResumeSelect','localResumeSelect'].forEach(id => { if ($(id)) $(id).value = resumeId || ''; });
+  ['resumeSelect','localResumeSelect'].forEach(id => { if ($(id)) $(id).value = resumeId || ''; });
   document.querySelectorAll('.resume-item').forEach(item => {
     const selected = item.dataset.resumeId === resumeId; item.classList.toggle('selected', selected);
     const radio = item.querySelector('.resume-select-dot'); if (radio) radio.checked = selected;
@@ -286,7 +282,7 @@ $('executionMode').addEventListener('change', async () => {
 
 $('manualForm').addEventListener('submit', async e => {
   e.preventDefault();
-  const chosenResumeId = $('manualResumeSelect').value || null;
+  const chosenResumeId = state.activeResumeId || state.config?.strategy?.resumeId || null;
   const strategyResumeId = state.config?.strategy?.resumeId || null;
   if (chosenResumeId && strategyResumeId && chosenResumeId !== strategyResumeId) {
     return toast('这份简历还没有生成对应词库，请先完成本地分析并选择目标方向', true);
@@ -296,7 +292,7 @@ $('manualForm').addEventListener('submit', async e => {
     searchKeywords:$('manualKeywords').value, excludedKeywords:$('manualExcluded').value,
     companyBlockKeywords:$('manualCompanies').value,
     threshold:Number($('manualThreshold').value), jobsPerKeyword:Number($('manualJobsPerKeyword').value),
-    deliveryMode:$('manualDeliveryMode').value, resumeDelivery:$('manualResumeDelivery').value,
+    deliveryMode:$('manualDeliveryMode').value,
     resumeId:chosenResumeId,
     targetRoles:$('manualKeywords').value, preferredSkills:$('manualSkills').value,
     scoring:{
@@ -520,7 +516,7 @@ $('confirmStrategyButton').addEventListener('click', async () => {
     searchKeywords:$('agentEditKeywords').value, excludedKeywords:$('agentEditExcluded').value,
     companyBlockKeywords:$('agentEditCompanies').value, threshold:Number($('agentEditThreshold').value),
     jobsPerKeyword,
-    deliveryMode:$('agentEditDeliveryMode').value, resumeDelivery:$('agentEditResumeDelivery').value,
+    deliveryMode:$('agentEditDeliveryMode').value,
     scoring:{
       ...(state.strategy?.scoring || state.config?.strategy?.scoring || {}),
       title_strong_keywords:parseWeightedLines($('agentEditTitlePositive').value),

@@ -331,7 +331,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertIn("config.executionMode === 'test' && plan.allowExecute", script)
         self.assertIn("config.executionMode === 'live' && platform !== 'zhaopin'", script)
         self.assertIn("!config.platforms?.[platform]?.enabled", script)
-        self.assertIn("plan.blockedBy === 'user_confirmation_required'", script)
+        self.assertIn('&& plan.allowExecute', script)
         self.assertIn('window.confirm(', script)
         self.assertIn('单岗位安全限制', script)
         self.assertIn('zhaopin_greeting_sent', script)
@@ -518,7 +518,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertFalse(plan['allowExecute'])
         self.assertEqual(plan['blockedBy'], 'adapter_not_live')
 
-    def test_zhaopin_live_execution_requires_explicit_user_confirmation(self):
+    def test_zhaopin_legacy_review_stays_screen_only_even_with_confirmation(self):
         import main
         import product_store
 
@@ -544,10 +544,10 @@ class SingleRouteBackendTests(unittest.TestCase):
                 confirmed = asyncio.run(main.api_execution_plan({**payload, 'confirmedByUser': True}))
 
         self.assertFalse(pending['allowExecute'])
-        self.assertEqual(pending['blockedBy'], 'user_confirmation_required')
-        self.assertTrue(pending['manualConfirmationRequired'])
-        self.assertTrue(confirmed['allowExecute'])
-        self.assertIsNone(confirmed['blockedBy'])
+        self.assertEqual(pending['blockedBy'], 'screen_only')
+        self.assertFalse(pending['manualConfirmationRequired'])
+        self.assertFalse(confirmed['allowExecute'])
+        self.assertEqual(confirmed['blockedBy'], 'screen_only')
 
     def test_zhaopin_auto_mode_can_execute_without_per_job_confirmation(self):
         import main
@@ -637,9 +637,9 @@ class SingleRouteBackendTests(unittest.TestCase):
 
         self.assertFalse(plan['contactAttempted'])
         self.assertTrue(plan['contactRetrySafe'])
-        self.assertEqual(plan['blockedBy'], 'user_confirmation_required')
+        self.assertEqual(plan['blockedBy'], 'screen_only')
 
-    def test_unconfirmed_product_strategy_defaults_to_review_mode(self):
+    def test_unconfirmed_product_strategy_defaults_to_screen_only_mode(self):
         import main
         import product_store
 
@@ -653,9 +653,57 @@ class SingleRouteBackendTests(unittest.TestCase):
                     '# 职位名称\nVLA算法实习生\n\n# 职位描述\n负责 VLA 和 LeRobot 模型训练'
                 ))
 
-        self.assertEqual(client['deliveryMode'], 'review')
+        self.assertEqual(client['deliveryMode'], 'screen_only')
         self.assertTrue(client['frontend']['onlyGreet'])
         self.assertFalse(result['autoSend'])
+
+    def test_old_review_and_resume_preferences_migrate_to_safe_platform_resume(self):
+        import main
+        import product_store
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / 'product_config.json'
+            config_path.write_text(json.dumps({
+                'executionMode': 'live',
+                'strategy': {
+                    'confirmed': True, 'deliveryMode': 'review',
+                    'resumeDelivery': 'pdf', 'resumeId': 'resume-one',
+                    'searchKeywords': ['VLA'], 'jobsPerKeyword': 20,
+                },
+            }), encoding='utf-8')
+            with mock.patch.object(product_store, 'CONFIG_PATH', config_path):
+                config = product_store.get_product_config(public=False)
+                client = asyncio.run(main.get_client_config())
+                plan = asyncio.run(main.api_execution_plan({
+                    'platform': 'boss',
+                    'job': {'company': '测试科技', 'title': 'VLA算法工程师'},
+                    'decision': {'score': 100},
+                }))
+
+        self.assertEqual(config['strategy']['deliveryMode'], 'screen_only')
+        self.assertNotIn('resumeDelivery', config['strategy'])
+        self.assertEqual(config['strategy']['resumeId'], 'resume-one')
+        self.assertEqual(client['deliveryMode'], 'screen_only')
+        self.assertEqual(client['resumeDelivery'], 'platform_resume')
+        self.assertFalse(plan['allowExecute'])
+        self.assertEqual(plan['blockedBy'], 'screen_only')
+
+    def test_manual_strategy_ignores_obsolete_resume_delivery_choice(self):
+        import main
+        import product_store
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / 'product_config.json'
+            with mock.patch.object(product_store, 'CONFIG_PATH', config_path):
+                result = asyncio.run(main.api_manual_strategy({
+                    'searchKeywords': ['VLA'], 'deliveryMode': 'auto',
+                    'resumeDelivery': 'image',
+                }))
+                client = asyncio.run(main.get_client_config())
+
+        self.assertEqual(result['strategy']['deliveryMode'], 'auto')
+        self.assertNotIn('resumeDelivery', result['strategy'])
+        self.assertEqual(client['resumeDelivery'], 'platform_resume')
 
     def test_manual_strategy_updates_existing_client_config(self):
         import main
@@ -686,7 +734,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertEqual(client['frontend']['maxJobsPerKeyword'], 25)
         self.assertEqual(client['frontend']['maxJobsPerRun'], 0)
         self.assertNotIn('searchFilters', client)
-        self.assertEqual(client['deliveryMode'], 'review')
+        self.assertEqual(client['deliveryMode'], 'screen_only')
         self.assertTrue(client['frontend']['onlyGreet'])
 
     def test_legacy_confirmed_strategy_gets_default_per_keyword_limit(self):
@@ -704,7 +752,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertEqual(client['frontend']['maxJobsPerKeyword'], 20)
         self.assertEqual(client['frontend']['maxJobsPerRun'], 0)
 
-    def test_review_mode_returns_no_auto_send(self):
+    def test_legacy_review_mode_returns_no_auto_send(self):
         import main
         import product_store
 
@@ -724,7 +772,7 @@ class SingleRouteBackendTests(unittest.TestCase):
                 ))
 
         self.assertFalse(result['autoSend'])
-        self.assertEqual(result['decisionMode'], 'review')
+        self.assertEqual(result['decisionMode'], 'screen_only')
 
     def test_confirmed_company_blacklist_is_enforced_by_backend(self):
         import main

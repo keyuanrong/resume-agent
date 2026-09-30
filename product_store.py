@@ -43,8 +43,7 @@ DEFAULT_PRODUCT_CONFIG: dict[str, Any] = {
         "companyBlockKeywords": [],
         "threshold": 80,
         "jobsPerKeyword": 20,
-        "deliveryMode": "review",
-        "resumeDelivery": "platform_resume",
+        "deliveryMode": "screen_only",
         "resumeId": None,
         "targetRoles": [],
         "preferredSkills": [],
@@ -90,6 +89,9 @@ def _write_json(path: Path, value: Any) -> None:
 def get_product_config(*, public: bool = True) -> dict:
     stored = _read_json(CONFIG_PATH, {})
     config = _deep_merge(DEFAULT_PRODUCT_CONFIG, stored if isinstance(stored, dict) else {})
+    strategy = config.get('strategy', {})
+    strategy['deliveryMode'] = 'auto' if strategy.get('deliveryMode') == 'auto' else 'screen_only'
+    strategy.pop('resumeDelivery', None)
     config['agent'].pop('apiKey', None)
     if config['agent'].get('provider') == 'qwen':
         config['agent']['provider'] = 'bailian'
@@ -107,6 +109,9 @@ def save_product_config(update: dict, *, replace_strategy: bool = False) -> dict
         merged["strategy"] = copy.deepcopy(update["strategy"])
     if replace_strategy and isinstance(update.get("candidateProfile"), dict):
         merged["candidateProfile"] = copy.deepcopy(update["candidateProfile"])
+    strategy = merged.get('strategy', {})
+    strategy['deliveryMode'] = 'auto' if strategy.get('deliveryMode') == 'auto' else 'screen_only'
+    strategy.pop('resumeDelivery', None)
     # 密钥只写入系统密钥库，绝不进入普通配置和 Git。
     agent_update = update.get("agent") if isinstance(update, dict) else None
     provider = merged.get('agent', {}).get('provider', 'bailian')

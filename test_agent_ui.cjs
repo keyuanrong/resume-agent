@@ -69,6 +69,23 @@ test('manual strategy saves per-keyword limit without removed platform settings'
   }
 });
 
+test('manual and agent forms send only the selected delivery mode', async () => {
+  const ui = page();
+  vm.runInContext("state.config={mode:'manual',agent:{},strategy:{resumeId:'resume-one'}}", ui.context);
+  ui.get('manualDeliveryMode').value = 'screen_only';
+  ui.get('manualKeywords').value = 'VLA算法工程师';
+  await ui.get('manualForm').emit('submit');
+  assert.equal(ui.manualSubmissions[0].deliveryMode, 'screen_only');
+  assert.equal(ui.manualSubmissions[0].resumeId, 'resume-one');
+  assert.equal(Object.hasOwn(ui.manualSubmissions[0], 'resumeDelivery'), false);
+
+  ui.get('agentEditDeliveryMode').value = 'auto';
+  ui.get('agentEditJobsPerKeyword').value = '20';
+  await ui.get('confirmStrategyButton').emit('click');
+  assert.equal(ui.confirmations[0].deliveryMode, 'auto');
+  assert.equal(Object.hasOwn(ui.confirmations[0], 'resumeDelivery'), false);
+});
+
 test('entering a key loads model choices for the selected provider without selecting one', async () => {
   const ui = page();
   ui.providers[1].emit('click');

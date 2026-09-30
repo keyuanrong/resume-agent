@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         goodJobs · 智联招聘/前程无忧
 // @namespace    https://github.com/keyuanrong/resume-agent
-// @version      2026-09-27
-// @description  与 Boss 相同的控制面板；支持不发送全链路测试和智联单岗位人工确认沟通
+// @version      2026-09-30
+// @description  与 Boss 相同的控制面板；支持筛选不发送和智联自动沟通
 // @match        https://www.zhaopin.com/*
 // @match        https://sou.zhaopin.com/*
 // @match        https://jobs.zhaopin.com/*
@@ -919,15 +919,13 @@
             const blockedLabels = {
                 test_mode: '测试模式', adapter_not_live: '平台未开放正式执行',
                 platform_disabled: '平台未启用', screen_only: '只筛选模式',
-                review: '等待人工审核', duplicate_contact_attempt: '曾点击过真实沟通',
+                duplicate_contact_attempt: '曾点击过真实沟通',
                 company_missing: '公司未识别', below_threshold: '低于阈值',
             };
             const planStatus = config.executionMode === 'test'
                 ? '已拦截'
                 : plan.allowExecute ? '允许自动发送'
-                : plan.blockedBy === 'user_confirmation_required'
-                    ? '等待人工确认'
-                    : `未执行（${blockedLabels[plan.blockedBy] || plan.blockedBy || '未知原因'}）`;
+                : `未执行（${blockedLabels[plan.blockedBy] || plan.blockedBy || '未知原因'}）`;
             await addLog(`职位 [${job.title}] 匹配度：${decision.score}｜预计动作：${planned}｜${planStatus}`);
             await logAction({
                 action: config.executionMode === 'test' ? 'platform_test_planned' : 'platform_live_planned',
@@ -950,7 +948,7 @@
             if (
                 config.executionMode === 'live'
                 && platform === 'zhaopin'
-                && (plan.blockedBy === 'user_confirmation_required' || plan.allowExecute)
+                && plan.allowExecute
             ) {
                 const locallyAttempted = await hasLiveAttempt(job);
                 if (locallyAttempted && plan.contactRetrySafe) {
@@ -1028,7 +1026,7 @@
                     ? '运行模式：只测试，不发送'
                     : config.deliveryMode === 'auto'
                         ? '运行模式：智联正式模式｜自动沟通｜去重｜异常自动停止｜不发附件'
-                        : '运行模式：智联正式模式｜单岗位｜每次人工确认｜不发附件');
+                    : '运行模式：智联正式模式｜筛选不发送');
                 state = {...state, modeAnnounced: true};
                 await saveState(state);
             }

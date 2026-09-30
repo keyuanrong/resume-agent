@@ -307,7 +307,7 @@ def _effective_client_config() -> dict:
         # 新控制台尚未确认策略时保持只读安全状态，避免继承旧配置直接发送。
         client.setdefault('frontend', {})['onlyGreet'] = True
         client['productMode'] = product_config.get('mode', 'manual')
-        client['deliveryMode'] = 'review'
+        client['deliveryMode'] = 'screen_only'
         client['executionMode'] = product_config.get('executionMode', 'test')
         client['platforms'] = copy.deepcopy(product_config.get('platforms', {}))
         return client
@@ -322,14 +322,14 @@ def _effective_client_config() -> dict:
     frontend['maxJobsPerRun'] = 0
     frontend['maxJobsPerKeyword'] = strategy['jobsPerKeyword']
     # 仅自动投递模式才进入现有的 Boss 新消息检测/平台简历发送流程。
-    # “只筛选”和“审核后发送”都不会由脚本自动联系候选岗位。
+    # “只筛选”不会由脚本自动联系候选岗位。
     execution_mode = product_config.get('executionMode', 'test')
     frontend['onlyGreet'] = strategy.get('deliveryMode') != 'auto' or execution_mode != 'live'
     client['productMode'] = product_config.get('mode', 'manual')
-    client['deliveryMode'] = strategy.get('deliveryMode', 'review')
+    client['deliveryMode'] = strategy.get('deliveryMode', 'screen_only')
     client['executionMode'] = execution_mode
     client['platforms'] = copy.deepcopy(product_config.get('platforms', {}))
-    client['resumeDelivery'] = strategy.get('resumeDelivery', 'platform_resume')
+    client['resumeDelivery'] = 'platform_resume'
     client['resumeId'] = strategy.get('resumeId')
     return client
 
@@ -393,10 +393,8 @@ def _normalize_strategy(strategy: dict, *, source: str, confirmed: bool) -> dict
     normalized['jobsPerKeyword'] = max(1, min(1000, _int_or_default(normalized.get('jobsPerKeyword'), 20)))
     for obsolete in ('dailyLimit', 'cities', 'jobType', 'minimumSalary', 'greeting'):
         normalized.pop(obsolete, None)
-    if normalized.get('deliveryMode') not in {'screen_only', 'review', 'auto'}:
-        normalized['deliveryMode'] = 'review'
-    if normalized.get('resumeDelivery') not in {'platform_resume', 'pdf', 'image', 'after_reply'}:
-        normalized['resumeDelivery'] = 'platform_resume'
+    normalized['deliveryMode'] = 'auto' if normalized.get('deliveryMode') == 'auto' else 'screen_only'
+    normalized.pop('resumeDelivery', None)
     normalized['scoring'] = _normalize_scoring(normalized.get('scoring'), normalized)
     normalized['source'] = source
     normalized['confirmed'] = confirmed
@@ -705,7 +703,7 @@ async def api_execution_plan(payload: dict = Body(...)):
     platform = str(payload.get('platform') or job.get('platform') or '').lower()
     score = _int_or_default(decision.get('score'), 0)
     threshold = _int_or_default(strategy.get('threshold'), 80)
-    delivery_mode = strategy.get('deliveryMode', 'review')
+    delivery_mode = strategy.get('deliveryMode', 'screen_only')
     execution_mode = product_config.get('executionMode', 'test')
     confirmed_by_user = payload.get('confirmedByUser') is True
     company = _clean_company(job.get('company'))
@@ -725,10 +723,6 @@ async def api_execution_plan(payload: dict = Body(...)):
         planned_actions.append({'type': 'record_only', 'label': '仅记录推荐结果'})
     elif platform == 'zhaopin' and delivery_mode == 'auto':
         planned_actions.append({'type': 'auto_greet', 'label': '自动发送招呼'})
-    elif platform == 'zhaopin' and delivery_mode == 'review':
-        planned_actions.append({'type': 'confirm_then_greet', 'label': '人工确认后发送招呼'})
-    elif delivery_mode == 'review':
-        planned_actions.append({'type': 'manual_review', 'label': '进入人工审核'})
     elif platform == 'boss':
         planned_actions.extend([
             {'type': 'send_greeting', 'label': '发送招呼语'},
@@ -744,18 +738,14 @@ async def api_execution_plan(payload: dict = Body(...)):
 
     platform_info = next((item for item in list_platforms() if item['id'] == platform), None)
     platform_enabled = bool(product_config.get('platforms', {}).get(platform, {}).get('enabled'))
-    manual_confirmation_required = bool(platform_info and platform_info.get('manualConfirmationRequired'))
-    requires_user_confirmation = manual_confirmation_required and delivery_mode != 'auto'
-    delivery_allows_execute = delivery_mode == 'auto' or (
-        platform == 'zhaopin' and delivery_mode == 'review' and confirmed_by_user
-    )
+    requires_user_confirmation = False
+    delivery_allows_execute = delivery_mode == 'auto'
     allow_execute = bool(
         execution_mode == 'live'
         and delivery_allows_execute
         and platform_info
         and platform_info.get('implemented')
         and platform_enabled
-        and (not requires_user_confirmation or confirmed_by_user)
         and not contact_attempted
         and company
         and score >= threshold
@@ -766,16 +756,14 @@ async def api_execution_plan(payload: dict = Body(...)):
         blocked_by = 'adapter_not_live'
     elif not platform_enabled:
         blocked_by = 'platform_disabled'
-    elif delivery_mode == 'screen_only':
-        blocked_by = 'screen_only'
     elif not company:
         blocked_by = 'company_missing'
     elif score < threshold:
         blocked_by = 'below_threshold'
     elif contact_attempted:
         blocked_by = 'duplicate_contact_attempt'
-    elif requires_user_confirmation and not confirmed_by_user:
-        blocked_by = 'user_confirmation_required'
+    elif delivery_mode == 'screen_only':
+        blocked_by = 'screen_only'
     elif not delivery_allows_execute:
         blocked_by = delivery_mode
     else:
@@ -902,7 +890,7 @@ async def get_job_score(job: Any = Body(..., description="职位信息")):
     result['decisionId'] = uuid.uuid4().hex
     result['company'] = company
     result['salary'] = salary
-    delivery_mode = strategy.get('deliveryMode', 'review') if strategy else 'review'
+    delivery_mode = strategy.get('deliveryMode', 'screen_only') if strategy else 'screen_only'
     execution_mode = product_config.get('executionMode', 'test')
     result['autoSend'] = (
         execution_mode == 'live'

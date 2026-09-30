@@ -195,7 +195,7 @@ class QwenAgent:
             "返回严格 JSON，字段必须包含 profile、draftStrategy；questions 可以为空列表，补充问题由系统生成。"
             "profile 包含 summary、skills、experienceHighlights、education、targetRoleHints、risks。"
             "draftStrategy 包含 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、"
-            "jobsPerKeyword、deliveryMode、resumeDelivery、targetRoles、preferredSkills。"
+            "jobsPerKeyword、deliveryMode、targetRoles、preferredSkills。deliveryMode 只能为 screen_only 或 auto。"
             "searchKeywords 必须是适合在招聘平台搜索的岗位名称短语，而非单个技能词；"
             "preferredSkills 是简历有证据的技术词；excludedKeywords 只放用户明确排除的方向，不凭猜测硬拦截。"
             "城市、薪资、公司规模、岗位性质和经验要求由招聘网站职位信息提供，不根据简历臆测筛选限制。"
@@ -248,7 +248,7 @@ class QwenAgent:
             "标题正向 60-100，描述正向 1-30，标题软扣分 1-45，描述软扣分 1-36。"
             "软扣分用于方向相邻但不够合适的岗位，不等于排除；不要生成 title_block_keywords。"
             "只返回 JSON 对象，字段为 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、"
-            "jobsPerKeyword、deliveryMode、resumeDelivery、targetRoles、preferredSkills、scoring。"
+            "jobsPerKeyword、deliveryMode、targetRoles、preferredSkills、scoring。deliveryMode 只能为 screen_only 或 auto。"
         )
         data = {"profile": profile, "draftStrategy": draft, "questions": questions, "answers": answers}
         result = self._request([

@@ -131,24 +131,11 @@
           </label>
           <label class="full">投递方式
             <select id="manualDeliveryMode">
-              <option value="screen_only">只筛选，不发送</option>
-              <option value="review" selected>审核后发送</option>
+              <option value="screen_only" selected>筛选不发送</option>
               <option value="auto">自动发送</option>
             </select>
           </label>
-          <label class="full">简历发送方式
-            <select id="manualResumeDelivery">
-              <option value="platform_resume">使用招聘平台已有简历</option>
-              <option value="after_reply">对方回复后再发送</option>
-              <option value="pdf">优先发送 PDF（取决于平台能力）</option>
-              <option value="image">优先发送图片（取决于平台能力）</option>
-            </select>
-            <small>当前 Boss 自动链路只支持选择平台已有简历；PDF/图片会保留为策略偏好，不会冒充已发送。</small>
-          </label>
-          <label class="full">使用的本地简历
-            <select id="manualResumeSelect"><option value="">暂不指定</option></select>
-            <small>本地简历用于 Agent 和策略管理；Boss 平台已有简历仍由 `resumeIndex` 选择。</small>
-          </label>
+          <small class="full">Boss 自动流程使用招聘平台已有简历；本地上传的简历只用于生成词库。</small>
           <button class="button primary full" type="submit">保存并启用手动策略</button>
         </form>
 
@@ -222,12 +209,7 @@
                 <label>每个搜索词查看数<input id="agentEditJobsPerKeyword" type="number" min="1" max="1000" value="20" required></label>
                 <label>投递方式
                   <select id="agentEditDeliveryMode">
-                    <option value="screen_only">只筛选</option><option value="review">审核后发送</option><option value="auto">自动发送</option>
-                  </select>
-                </label>
-                <label>简历方式
-                  <select id="agentEditResumeDelivery">
-                    <option value="platform_resume">平台已有简历</option><option value="after_reply">回复后发送</option><option value="pdf">优先 PDF</option><option value="image">优先图片</option>
+                    <option value="screen_only">筛选不发送</option><option value="auto">自动发送</option>
                   </select>
                 </label>
               </div>
