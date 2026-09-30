@@ -17,7 +17,7 @@ function page() {
     replaceChildren() { this.children = []; }
     appendChild(child) { this.children.push(child); }
     setAttribute(name, value) { this[name] = value; }
-    emit(event) { return this.listeners[event]?.({target:this}); }
+    emit(event) { return this.listeners[event]?.({target:this, preventDefault() {}}); }
   }
   const elements = new Map();
   const get = id => {
@@ -30,6 +30,7 @@ function page() {
   const timers = [];
   const requests = [];
   const confirmations = [];
+  const manualSubmissions = [];
   const document = {
     getElementById: get,
     createElement: () => new Element(),
@@ -40,6 +41,10 @@ function page() {
       confirmations.push(JSON.parse(options.body));
       return Promise.resolve({ok:true, headers:{get:()=>'application/json'}, json:async()=>({mode:'agent', agent:{}, strategy:{}})});
     }
+    if (url === '/api/strategy/manual') {
+      manualSubmissions.push(JSON.parse(options.body));
+      return Promise.resolve({ok:true, headers:{get:()=>'application/json'}, json:async()=>({mode:'manual', agent:{}, strategy:{}})});
+    }
     if (url !== '/api/agent/models') return new Promise(() => {});
     requests.push(JSON.parse(options.body));
     return Promise.resolve({ok:true, headers:{get:()=>'application/json'}, json:async()=>({models:[
@@ -49,8 +54,20 @@ function page() {
   };
   const context = vm.createContext({document, fetch, setTimeout:fn=>{timers.push(fn); return timers.length;}, clearTimeout:()=>{}, console});
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'static/app.js'), 'utf8'), context);
-  return {get, providers, timers, requests, confirmations, context};
+  return {get, providers, timers, requests, confirmations, manualSubmissions, context};
 }
+
+test('manual strategy saves per-keyword limit without removed platform settings', async () => {
+  const ui = page();
+  vm.runInContext("state.config={mode:'manual',agent:{},strategy:{}}", ui.context);
+  ui.get('manualJobsPerKeyword').value = '17';
+  ui.get('manualKeywords').value = 'VLA算法工程师';
+  await ui.get('manualForm').emit('submit');
+  assert.equal(ui.manualSubmissions[0].jobsPerKeyword, 17);
+  for (const field of ['dailyLimit','cities','jobType','minimumSalary','greeting']) {
+    assert.equal(Object.hasOwn(ui.manualSubmissions[0], field), false, field);
+  }
+});
 
 test('entering a key loads model choices for the selected provider without selecting one', async () => {
   const ui = page();
@@ -93,6 +110,10 @@ test('agent editor shows and confirms weighted positive and soft negative lists'
   await ui.get('confirmStrategyButton').emit('click');
   assert.equal(ui.confirmations[0].scoring.title_strong_keywords['VLA算法'], 92);
   assert.equal(ui.confirmations[0].scoring.detail_negative_keywords['传统定位建图'], 16);
+  assert.equal(ui.confirmations[0].jobsPerKeyword, 20);
+  for (const field of ['dailyLimit','cities','jobType','minimumSalary','greeting']) {
+    assert.equal(Object.hasOwn(ui.confirmations[0], field), false, field);
+  }
 });
 
 test('agent mode lets the user select a locally identified direction', () => {

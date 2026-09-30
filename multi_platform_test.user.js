@@ -19,13 +19,40 @@
 
 (function () {
     'use strict';
+    function keywordRemaining(state, limit) {
+        const used = Number(state.keywordProcessed?.[state.keywordIndex] || 0);
+        return Math.max(0, Math.max(1, Number(limit) || 20) - used);
+    }
+    function recordKeywordView(state) {
+        const index = Number(state.keywordIndex || 0);
+        return {
+            ...state,
+            totalProcessed: Number(state.totalProcessed || 0) + 1,
+            keywordProcessed: {
+                ...(state.keywordProcessed || {}),
+                [index]: Number(state.keywordProcessed?.[index] || 0) + 1,
+            },
+        };
+    }
+    async function waitForPlatformGreeting(input, timeoutMs = 2500) {
+        const deadline = Date.now() + timeoutMs;
+        while (true) {
+            const value = String(input?.value ?? input?.textContent ?? '').replace(/\s+/g, ' ').trim();
+            if (value || Date.now() >= deadline) return value;
+            await new Promise(resolve => setTimeout(resolve, Math.min(100, deadline - Date.now())));
+        }
+    }
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = {keywordRemaining, recordKeywordView, waitForPlatformGreeting};
+        return;
+    }
 
     const SERVER = 'http://127.0.0.1:8000';
     const DETAIL_REQUEST_KEY = 'resumeAgent:platformTest:detailRequest';
     const DETAIL_RESPONSE_KEY = 'resumeAgent:platformTest:detailResponse';
     const RUN_STATE_KEY = 'resumeAgent:platformTest:runState';
     const LOG_KEY_PREFIX = 'resumeAgent:platformTest:logs:';
-    const DEFAULT_MAX_JOBS = 5;
+    const DEFAULT_MAX_JOBS_PER_KEYWORD = 20;
     const MANUAL_FILTER_WAIT_MS = 10000;
     const MAX_LOG_LINES = 250;
     const INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -432,16 +459,49 @@
             : 'a[href*="jobs.51job.com/"]';
         return `地址=${location.pathname}｜候选职位链接=${document.querySelectorAll(jobLinkSelector).length}｜页面标题=${clean(document.title)}`;
     };
-    const loadCards = async () => {
+    const loadCards = async targetCount => {
         let cards = getCards();
-        for (let round = 0; round < 8; round += 1) {
+        let stableRounds = 0;
+        for (let round = 0; round < 24; round += 1) {
             await waitIfPaused();
-            if (cards.length >= 20) break;
+            if (cards.length >= targetCount || stableRounds >= 3) break;
+            const previousCount = cards.length;
             window.scrollBy({top: Math.max(500, window.innerHeight * 0.8), behavior: 'smooth'});
             await sleep(650);
             cards = getCards();
+            stableRounds = cards.length > previousCount ? 0 : stableRounds + 1;
         }
         return cards;
+    };
+    const advanceResultsPage = async state => {
+        if (Number(state.pageAdvanceCount || 0) >= 50) return false;
+        const candidate = firstElement(document, [
+            '.ant-pagination-next:not(.ant-pagination-disabled) button',
+            '.pagination .next:not(.disabled) a',
+            '.pager .next:not(.disabled) a',
+            'button[aria-label*="下一页"]',
+            'a[rel="next"]',
+        ], true);
+        const button = candidate || findTextButton('下一页');
+        if (!button || button.disabled || button.getAttribute?.('aria-disabled') === 'true'
+            || /disabled/.test(String(button.className || button.parentElement?.className || ''))) return false;
+        const signature = () => getCards().slice(0, 3).map(card =>
+            `${firstHref(card, definition.link)}|${firstText(card, definition.title)}`).join('\n');
+        const beforeUrl = location.href;
+        const beforeCards = signature();
+        await saveState({...state, pageAdvanceCount: Number(state.pageAdvanceCount || 0) + 1});
+        button.click();
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+            await sleep(300);
+            if (location.href !== beforeUrl || signature() !== beforeCards) {
+                await addLog(`当前搜索词尚未达到查看额度，继续下一页`);
+                // 普通跳转会销毁旧页面；站内路由只改 URL 时仍需由当前页面续跑。
+                setTimeout(() => runEngine(), 0);
+                return true;
+            }
+        }
+        await addLog('点击下一页后未识别到页面变化，结束当前搜索词');
+        return false;
     };
     const extractCard = (card, index) => {
         const url = firstHref(card, definition.link);
@@ -543,13 +603,6 @@
             await gmDelete(DETAIL_REQUEST_KEY);
         }
     };
-    const filterCheck = config => {
-        const filters = config.searchFilters || {};
-        const configured = [...(filters.cities || []), filters.jobType, filters.minimumSalary].filter(Boolean);
-        const pageText = clean(document.body.innerText);
-        return {configured, visible: configured.filter(item => pageText.includes(String(item)))};
-    };
-
     const visibleElements = selectors => selectors.flatMap(selector => (
         Array.from(document.querySelectorAll(selector)).filter(visible)
     ));
@@ -663,11 +716,10 @@
         return {success: false, reason: '点击发送后未识别到成功状态'};
     };
     const completeChatGreeting = async (input, decision, job, autoMode = false) => {
-        const greeting = clean(decision.introduce);
-        if (!greeting) return {success: false, reason: '后端没有返回招呼语'};
-        setEditableValue(input, greeting);
+        const greeting = await waitForPlatformGreeting(input);
+        if (!greeting) return {success: false, reason: '平台未预填招呼语，请在页面手动处理'};
         const confirmed = autoMode || window.confirm(
-            `智联招聘已打开聊天输入框，并填入招呼语：\n\n${greeting}\n\n是否点击“发送”？`
+            `智联招聘已打开聊天输入框，平台预填招呼语：\n\n${greeting}\n\n是否点击“发送”？`
         );
         if (!confirmed) return {success: false, cancelled: true, reason: '用户取消发送招呼语'};
         const container = input.closest('[class*="chat"],[class*="dialog"],[role="dialog"]') || document;
@@ -809,10 +861,6 @@
             }
         }
         await addLog(`开始按当前筛选条件扫描岗位（关键词：${state.currentKeyword}）`);
-        const checkedFilters = filterCheck(config);
-        if (checkedFilters.configured.length) {
-            await addLog(`筛选条件：页面命中 ${checkedFilters.visible.length}/${checkedFilters.configured.length}`);
-        }
         const diagnostics = collectListDiagnostics();
         await addLog(platform === 'zhaopin'
             ? `列表诊断：传统职位链接 ${diagnostics.visibleJobLinkCount} 个；新版岗位主要使用无链接卡片`
@@ -821,7 +869,7 @@
         const structureDiagnostics = collectStructureDiagnostics();
         await logAction({action: 'platform_structure_diagnostics', diagnostics: structureDiagnostics});
         await addLog(`结构诊断已记录：重复候选结构 ${structureDiagnostics.repeatedStructures.length} 组，相关资源 ${structureDiagnostics.resourcePaths.length} 条`);
-        const cards = await loadCards();
+        const cards = await loadCards(Math.min(maxJobs, 100));
         if (!cards.length) {
             await addLog(`页面诊断：${pageDiagnostics()}`);
             throw new Error('没有识别到岗位列表；请确认已经登录，且当前页面确实显示了岗位卡片');
@@ -829,18 +877,18 @@
         await addLog(platform === 'zhaopin' && Number(state.keywordIndex || 0) > 0
             ? `岗位列表已识别 ${cards.length} 条（可能包含前轮保留卡片，处理时自动去重）`
             : `岗位列表已识别 ${cards.length} 条`);
-        const roundLimit = Math.max(1, Number(config.frontend?.maxJobsPerRound || 20));
+        const roundLimit = maxJobs;
         let current = await readState();
         const seen = new Set(Array.isArray(current.seen) ? current.seen : []);
         let roundProcessed = 0;
         for (const [index, card] of cards.entries()) {
             current = await waitIfPaused();
-            if (Number(current.totalProcessed || 0) >= maxJobs || roundProcessed >= roundLimit) break;
+            if (keywordRemaining(current, maxJobs) <= 0 || roundProcessed >= roundLimit) break;
             const cardJob = extractCard(card, index);
             const key = cardJob.url || `${cardJob.title}|${cardJob.company}`;
             if (!cardJob.title || seen.has(key)) continue;
             seen.add(key);
-            await addLog(`| 浏览: ${Number(current.totalProcessed || 0) + 1}/${maxJobs} | 正在获取职位详情 |`);
+            await addLog(`| 当前搜索词: ${maxJobs - keywordRemaining(current, maxJobs) + 1}/${maxJobs} | 正在获取职位详情 |`);
             const job = await fetchDetail(cardJob, card);
             await addLog(job.company ? `已识别公司：[${job.company}]` : `岗位 [${job.title}] 未识别到公司名称`);
             if (job.detailSource === 'job_card_inline_timeout') {
@@ -858,7 +906,7 @@
                     cardStructure: job.cardStructure || [],
                 });
                 roundProcessed += 1;
-                current = {...current, totalProcessed: Number(current.totalProcessed || 0) + 1, seen: Array.from(seen).slice(-1000)};
+                current = {...recordKeywordView(current), seen: Array.from(seen).slice(-1000)};
                 await saveState(current);
                 continue;
             }
@@ -897,7 +945,7 @@
                 blockedBy: plan.blockedBy,
             });
             roundProcessed += 1;
-            current = {...current, totalProcessed: Number(current.totalProcessed || 0) + 1, seen: Array.from(seen).slice(-1000)};
+            current = {...recordKeywordView(current), seen: Array.from(seen).slice(-1000)};
             await saveState(current);
             if (
                 config.executionMode === 'live'
@@ -941,21 +989,18 @@
                 return;
             }
         }
-        if (!roundProcessed) {
+        current = await readState();
+        if (keywordRemaining(current, maxJobs) > 0 && await advanceResultsPage(current)) return;
+        if (!roundProcessed && !Number(current.pageAdvanceCount || 0)) {
             await addLog(`页面诊断：${pageDiagnostics()}`);
             throw new Error('找到了疑似列表元素，但没有提取到有效岗位名称和链接');
-        }
-        current = await readState();
-        if (Number(current.totalProcessed || 0) >= maxJobs) {
-            await finishRun(current, `本次${config.executionMode === 'test' ? '测试' : '正式扫描'}完成：已检查 ${current.totalProcessed} 个岗位，程序自动暂停`, config);
-            return;
         }
         const nextIndex = Number(current.keywordIndex || 0) + 1;
         if (nextIndex >= keywords.length) {
             await finishRun(current, `全部关键词${config.executionMode === 'test' ? '测试' : '正式扫描'}完成：已检查 ${current.totalProcessed || 0} 个岗位`, config);
             return;
         }
-        const next = {...current, phase: 'search', keywordIndex: nextIndex};
+        const next = {...current, phase: 'search', keywordIndex: nextIndex, pageAdvanceCount: 0};
         await saveState(next);
         await divider();
         await addLog('当前关键词处理完成，准备切换下一个关键词');
@@ -989,8 +1034,8 @@
             }
             const keywords = Array.isArray(config.tags) ? config.tags.map(clean).filter(Boolean) : [];
             if (!keywords.length) throw new Error('控制台没有配置搜索关键词');
-            const configuredMax = Number(config.frontend?.maxJobsPerRun || 0);
-            const maxJobs = configuredMax > 0 ? configuredMax : DEFAULT_MAX_JOBS;
+            const configuredMax = Number(config.frontend?.maxJobsPerKeyword || 0);
+            const maxJobs = configuredMax > 0 ? configuredMax : DEFAULT_MAX_JOBS_PER_KEYWORD;
             if (state.phase === 'search') {
                 const keyword = keywords[Math.min(Number(state.keywordIndex || 0), keywords.length - 1)];
                 await divider();
@@ -1039,6 +1084,8 @@
             phase: 'search',
             keywordIndex: 0,
             totalProcessed: 0,
+            keywordProcessed: {},
+            pageAdvanceCount: 0,
             liveSent: 0,
             seen: [],
             ownerId: INSTANCE_ID,

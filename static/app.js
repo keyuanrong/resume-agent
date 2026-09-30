@@ -79,11 +79,10 @@ function strategySummary(s) {
     `标题软扣分词：${Object.keys(s.scoring?.title_penalty_keywords || {}).length} 个`,
     `JD软扣分词：${Object.keys(s.scoring?.detail_negative_keywords || {}).length} 个`,
     `自动排除：${(s.excludedKeywords || []).join('、') || '无'}`,
-    `城市：${(s.cities || []).join('、') || '不限'}`,
+    `每个搜索词查看数：${s.jobsPerKeyword ?? 20}`,
     `匹配阈值：${s.threshold ?? 80}`,
     `投递方式：${{screen_only:'只筛选',review:'审核后发送',auto:'自动发送'}[s.deliveryMode] || '审核后发送'}`,
     `简历方式：${{platform_resume:'平台已有简历',after_reply:'回复后发送',pdf:'优先 PDF',image:'优先图片'}[s.resumeDelivery] || '平台已有简历'}`,
-    `招呼语：${s.greeting || '未设置'}`,
   ].join('\n');
 }
 
@@ -97,8 +96,7 @@ function renderAgentEditor(s) {
   $('agentEditDetailNegative').value = weightedLines(s.scoring?.detail_negative_keywords);
   $('agentEditCompanies').value = lines(s.companyBlockKeywords);
   $('agentEditThreshold').value = s.threshold ?? 80;
-  $('agentEditDailyLimit').value = s.dailyLimit || 30;
-  $('agentEditGreeting').value = s.greeting || '';
+  $('agentEditJobsPerKeyword').value = s.jobsPerKeyword ?? 20;
   $('agentEditDeliveryMode').value = s.deliveryMode || 'review';
   $('agentEditResumeDelivery').value = s.resumeDelivery || 'platform_resume';
 }
@@ -146,12 +144,8 @@ function renderConfig() {
   $('manualTitlePenalty').value = weightedLines(s.scoring?.title_penalty_keywords);
   $('manualDetailNegative').value = weightedLines(s.scoring?.detail_negative_keywords);
   $('manualCompanies').value = lines(s.companyBlockKeywords);
-  $('manualGreeting').value = s.greeting || '';
   $('manualThreshold').value = s.threshold ?? 80; $('thresholdOutput').textContent = s.threshold ?? 80;
-  $('manualDailyLimit').value = s.dailyLimit || 30;
-  $('manualCities').value = lines(s.cities);
-  $('manualJobType').value = s.jobType || '';
-  $('manualMinimumSalary').value = s.minimumSalary || '';
+  $('manualJobsPerKeyword').value = s.jobsPerKeyword ?? 20;
   $('manualDeliveryMode').value = s.deliveryMode || 'review';
   $('manualResumeDelivery').value = s.resumeDelivery || 'platform_resume';
   $('strategyStatus').textContent = s.confirmed ? '已确认' : '未确认';
@@ -300,9 +294,8 @@ $('manualForm').addEventListener('submit', async e => {
   const currentScoring = state.config?.strategy?.scoring || {};
   const payload = {
     searchKeywords:$('manualKeywords').value, excludedKeywords:$('manualExcluded').value,
-    companyBlockKeywords:$('manualCompanies').value, greeting:$('manualGreeting').value,
-    threshold:Number($('manualThreshold').value), dailyLimit:Number($('manualDailyLimit').value),
-    cities:$('manualCities').value, jobType:$('manualJobType').value, minimumSalary:$('manualMinimumSalary').value,
+    companyBlockKeywords:$('manualCompanies').value,
+    threshold:Number($('manualThreshold').value), jobsPerKeyword:Number($('manualJobsPerKeyword').value),
     deliveryMode:$('manualDeliveryMode').value, resumeDelivery:$('manualResumeDelivery').value,
     resumeId:chosenResumeId,
     targetRoles:$('manualKeywords').value, preferredSkills:$('manualSkills').value,
@@ -519,10 +512,14 @@ $('buildStrategyButton').addEventListener('click', async () => {
 });
 
 $('confirmStrategyButton').addEventListener('click', async () => {
+  const jobsPerKeyword = Number($('agentEditJobsPerKeyword').value);
+  if (!Number.isInteger(jobsPerKeyword) || jobsPerKeyword < 1 || jobsPerKeyword > 1000) {
+    return toast('每个搜索词查看数请输入 1 到 1000 的整数', true);
+  }
   const edits = {
     searchKeywords:$('agentEditKeywords').value, excludedKeywords:$('agentEditExcluded').value,
     companyBlockKeywords:$('agentEditCompanies').value, threshold:Number($('agentEditThreshold').value),
-    dailyLimit:Number($('agentEditDailyLimit').value), greeting:$('agentEditGreeting').value,
+    jobsPerKeyword,
     deliveryMode:$('agentEditDeliveryMode').value, resumeDelivery:$('agentEditResumeDelivery').value,
     scoring:{
       ...(state.strategy?.scoring || state.config?.strategy?.scoring || {}),

@@ -318,7 +318,7 @@ class SingleRouteBackendTests(unittest.TestCase):
 
         for marker in (
             '清空', '开始', '暂停', '继续', '收起', '展开',
-            '本轮搜索关键词', 'keywordIndex', 'maxJobsPerRun', 'maxJobsPerRound',
+            '本轮搜索关键词', 'keywordIndex', 'maxJobsPerKeyword',
             "'/get-job-score'", "'/api/execution/plan'", '发送安全锁', 'GM_openInTab',
             'platform_dom_diagnostics', 'visibleJobLinkCount', 'detailLength',
             'platform_structure_diagnostics', 'repeatedStructures', 'resourcePaths',
@@ -355,7 +355,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         score_call = 'const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail, jobInfo.company);'
         self.assertIn(blocked_action, script)
         self.assertIn('getBlockedCompanyKeyword(jobInfo.company)', script)
-        self.assertIn('if (!isUsableCompanyName(info.company))', script)
+        self.assertIn('if (companyBlacklistEnabled && !isUsableCompanyName(jobInfo.company))', script)
         self.assertIn("'公司', '公司信息', '企业', '企业信息'", script)
         self.assertIn("action: 'job_company_unknown'", script)
         self.assertLess(script.index(blocked_action), script.index(score_call))
@@ -670,18 +670,39 @@ class SingleRouteBackendTests(unittest.TestCase):
                     'excludedKeywords': '销售, SLAM',
                     'companyBlockKeywords': '测试公司',
                     'threshold': 86,
-                    'dailyLimit': 25,
-                    'greeting': '您好，想进一步了解岗位。',
+                    'jobsPerKeyword': 25,
+                    'dailyLimit': 1,
+                    'greeting': '旧版自定义招呼语',
+                    'cities': ['北京'],
+                    'jobType': 'campus',
+                    'minimumSalary': '30k',
                     'deliveryMode': 'review',
                 }))
                 client = asyncio.run(main.get_client_config())
 
         self.assertEqual(client['tags'], ['VLA实习生', '机器人学习'])
-        self.assertEqual(client['introduce'], '您好，想进一步了解岗位。')
+        self.assertNotEqual(client['introduce'], '旧版自定义招呼语')
         self.assertEqual(client['frontend']['thread'], 86)
-        self.assertEqual(client['frontend']['maxJobsPerRun'], 25)
+        self.assertEqual(client['frontend']['maxJobsPerKeyword'], 25)
+        self.assertEqual(client['frontend']['maxJobsPerRun'], 0)
+        self.assertNotIn('searchFilters', client)
         self.assertEqual(client['deliveryMode'], 'review')
         self.assertTrue(client['frontend']['onlyGreet'])
+
+    def test_legacy_confirmed_strategy_gets_default_per_keyword_limit(self):
+        import main
+        import product_store
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / 'product_config.json'
+            config_path.write_text(json.dumps({
+                'strategy': {'confirmed': True, 'searchKeywords': ['VLA'], 'dailyLimit': 3},
+            }), encoding='utf-8')
+            with mock.patch.object(product_store, 'CONFIG_PATH', config_path):
+                client = asyncio.run(main.get_client_config())
+
+        self.assertEqual(client['frontend']['maxJobsPerKeyword'], 20)
+        self.assertEqual(client['frontend']['maxJobsPerRun'], 0)
 
     def test_review_mode_returns_no_auto_send(self):
         import main

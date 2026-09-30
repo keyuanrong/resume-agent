@@ -11,6 +11,26 @@
 
 (function () {
     'use strict';
+    function createKeywordBudget(limit) {
+        const counts = new Map();
+        const cap = Math.max(1, Number(limit) || 20);
+        return {
+            remaining: keyword => Math.max(0, cap - (counts.get(keyword) || 0)),
+            record(keyword) { counts.set(keyword, (counts.get(keyword) || 0) + 1); },
+            complete(keyword) { counts.set(keyword, cap); },
+            next(keywords, currentIndex) {
+                for (let step = 1; step <= keywords.length; step++) {
+                    const index = (currentIndex + step) % keywords.length;
+                    if (this.remaining(keywords[index]) > 0) return index;
+                }
+                return -1;
+            },
+        };
+    }
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = {createKeywordBudget};
+        return;
+    }
 
     // 配置项
     const OPTIONS = {
@@ -30,7 +50,7 @@
         preloadStableRoundsLimit: 24, // 岗位预加载：连续多少轮无增长后结束
         preloadMaxRounds: 300, // 岗位预加载：最多滑动多少轮
         maxJobsPerRound: 20, // 每轮最多实际评分多少个岗位，0 表示不限制
-        maxJobsPerRun: 0, // 本次启动最多检查多少个岗位，0 表示不限制
+        maxJobsPerKeyword: 20, // 每个搜索词在本次启动最多查看的岗位数
         jobHistoryExpireDays: 7, // 已检查岗位在多少天内跳过，0 表示关闭跨次去重
         jobHistoryResetToken: '', // 修改为一个新值时，仅自动清空一次岗位历史
         companyBlockKeywords: [], // 公司名称黑名单，命中后不评分、不打招呼
@@ -684,6 +704,11 @@
             }
         }
 
+        finish() {
+            this.__pause = true;
+            this.runBtn.innerText = '开始';
+        }
+
         remove() {
             this.ctn.remove();
         }
@@ -741,10 +766,11 @@
             let pendingRoundRestart = false;
             let roundTransitioning = false;
             let currentRound = 0;
-            let emptyRounds = 0;
+            const emptyRoundsByKeyword = new Map();
             let roundQueuedCount = 0;
             let currentKeyword = '';
             let currentTagIdx = -1;
+            let keywordBudget = createKeywordBudget(OPTIONS.maxJobsPerKeyword);
             const processedJobHrefs = new Set();
             const jobHistoryStorageKey = 'goodJobs.jobHistory.v1';
             const jobHistoryResetStorageKey = 'goodJobs.jobHistoryResetToken.v1';
@@ -931,8 +957,7 @@
 
             // 下一页
             const nextPage = async () => {
-                if (OPTIONS.maxJobsPerRun > 0 && count >= OPTIONS.maxJobsPerRun) {
-                    logger.add(`本次测试已达到 ${OPTIONS.maxJobsPerRun} 个岗位的总上限`);
+                if (keywordBudget.remaining(currentKeyword) <= 0) {
                     return false;
                 }
                 if (OPTIONS.maxJobsPerRound > 0 && roundQueuedCount >= OPTIONS.maxJobsPerRound) {
@@ -954,10 +979,7 @@
                         const remainingRoundSlots = OPTIONS.maxJobsPerRound > 0
                             ? Math.max(0, OPTIONS.maxJobsPerRound - roundQueuedCount)
                             : hrefs.length;
-                        const remainingRunSlots = OPTIONS.maxJobsPerRun > 0
-                            ? Math.max(0, OPTIONS.maxJobsPerRun - count)
-                            : hrefs.length;
-                        const queuedHrefs = hrefs.slice(0, Math.min(remainingRoundSlots, remainingRunSlots));
+                        const queuedHrefs = hrefs.slice(0, Math.min(remainingRoundSlots, keywordBudget.remaining(currentKeyword)));
                         jobHrefs.push(...queuedHrefs);
                         roundQueuedCount += queuedHrefs.length;
                         logger.add(`本页新增 ${queuedHrefs.length} 个未处理岗位`);
@@ -1016,21 +1038,20 @@
                 if (roundTransitioning) return;
                 roundTransitioning = true;
                 try {
-                    if (OPTIONS.maxJobsPerRun > 0 && count >= OPTIONS.maxJobsPerRun) {
-                        this.pause = true;
-                        logger.add(`本次测试完成：已检查 ${count} 个岗位，程序自动暂停`);
-                        return;
+                    if (keywordBudget.remaining(currentKeyword) <= 0) {
+                        logger.add(`搜索词 [${currentKeyword}] 已查看到设定数量，切换下一个搜索词`);
+                        return startRound();
                     }
                     if (roundQueuedCount === 0) {
-                        emptyRounds += 1;
-                        logger.add(`第 ${currentRound} 轮没有拿到新岗位（连续空轮 ${emptyRounds}/${OPTIONS.maxEmptyRounds}）`);
+                        emptyRoundsByKeyword.set(currentKeyword, (emptyRoundsByKeyword.get(currentKeyword) || 0) + 1);
+                        logger.add(`第 ${currentRound} 轮没有拿到新岗位（搜索词 [${currentKeyword}] 连续空轮 ${emptyRoundsByKeyword.get(currentKeyword)}/${OPTIONS.maxEmptyRounds}）`);
                     } else {
-                        emptyRounds = 0;
+                        emptyRoundsByKeyword.set(currentKeyword, 0);
                         logger.add(`第 ${currentRound} 轮已处理完当前加载岗位，准备进入下一轮`);
                     }
-                    if (emptyRounds >= OPTIONS.maxEmptyRounds) {
-                        logger.add(`连续 ${OPTIONS.maxEmptyRounds} 轮没有新岗位，自动切换到下一个关键词继续挂机`);
-                        emptyRounds = 0;
+                    if (emptyRoundsByKeyword.get(currentKeyword) >= OPTIONS.maxEmptyRounds) {
+                        logger.add(`连续 ${OPTIONS.maxEmptyRounds} 轮没有新岗位，结束当前搜索词`);
+                        keywordBudget.complete(currentKeyword);
                         return startRound();
                     }
                     await tools.asyncSleep(OPTIONS.roundRestartDelayMs);
@@ -1224,7 +1245,9 @@
                     }
                     const diff = (new Date().getTime() - start) / 1000;
                     // 获取详情
-                    logger.add(`| 浏览: ${++count} | 剩余: ${jobHrefs.length} | 平均: ${(diff / count).toFixed(0)}s | 耗时: ${convertTime(diff)} |`);
+                    processedJobHrefs.add(getJobHistoryKey(href));
+                    keywordBudget.record(currentKeyword);
+                    logger.add(`| 浏览: ${++count} | 搜索词 [${currentKeyword}] 剩余: ${keywordBudget.remaining(currentKeyword)} | 队列: ${jobHrefs.length} | 平均: ${(diff / count).toFixed(0)}s | 耗时: ${convertTime(diff)} |`);
                     logger.add(`正在获取职位详情`);
                     const jobInfo = await getJobInfo(href);
                     if (jobInfo.skip) {
@@ -1483,6 +1506,10 @@
                     const currentCount = jobUl ? jobUl.querySelectorAll(SELECTORS.ZHIPIN.SEARCH.JOBHREFS).length : 0;
                     const beforeUniqueCount = preloadedHrefs.size;
                     collectLoadedHrefs(jobUl);
+                    if (preloadedHrefs.size >= keywordBudget.remaining(currentKeyword)) {
+                        logger.add(`当前搜索词已预加载足够岗位，停止继续滚动`);
+                        break;
+                    }
                     window.scrollBy({ top: OPTIONS.preloadScrollPixels, left: 0, behavior: 'smooth' });
                     await tools.asyncSleep(OPTIONS.preloadScrollWaitMs);
                     await activatePreloadCard(round);
@@ -1503,13 +1530,10 @@
                 }
                 const newHrefs = Array.from(preloadedHrefs)
                     .filter(href => !wasProcessedInCurrentRun(href) && !wasRecentlyChecked(href));
-                const remainingRunSlots = OPTIONS.maxJobsPerRun > 0
-                    ? Math.max(0, OPTIONS.maxJobsPerRun - count)
-                    : newHrefs.length;
                 const roundLimit = OPTIONS.maxJobsPerRound > 0
                     ? OPTIONS.maxJobsPerRound
                     : newHrefs.length;
-                const queuedHrefs = newHrefs.slice(0, Math.min(roundLimit, remainingRunSlots));
+                const queuedHrefs = newHrefs.slice(0, Math.min(roundLimit, keywordBudget.remaining(currentKeyword)));
                 jobHrefs.push(...queuedHrefs);
                 roundQueuedCount += queuedHrefs.length;
                 logger.add(`预加载完成，发现 ${newHrefs.length} 个唯一岗位，本轮选取 ${queuedHrefs.length} 个进行评分`);
@@ -1519,15 +1543,23 @@
                 if (!this.tags || !this.tags.length) {
                     throw new Error('未获取到岗位关键词列表');
                 }
-                currentTagIdx = (currentTagIdx + 1) % this.tags.length;
+                currentTagIdx = keywordBudget.next(this.tags, currentTagIdx);
+                if (currentTagIdx < 0) return null;
                 currentKeyword = this.tags[currentTagIdx];
                 return currentKeyword;
             };
 
             const startRound = async () => {
+                const keyword = pickNextKeyword();
+                if (!keyword) {
+                    this.pause = true;
+                    started = false;
+                    logger.finish();
+                    logger.add(`全部搜索词已完成：本次共查看 ${count} 个岗位`);
+                    return;
+                }
                 resetRoundState();
                 currentRound += 1;
-                const keyword = pickNextKeyword();
                 logger.divider();
                 logger.add(`开始第 ${currentRound} 轮`);
                 logger.add(`本轮搜索关键词：${keyword}`);
@@ -1544,6 +1576,12 @@
             // 主函数
             const main = async () => {
                 started = true;
+                count = 0;
+                currentRound = 0;
+                currentTagIdx = -1;
+                processedJobHrefs.clear();
+                emptyRoundsByKeyword.clear();
+                resetRoundState();
                 logger.add('--程序启动--');
                 // 开始广播
                 startBroadcast();
@@ -1556,6 +1594,7 @@
                     Object.assign(OPTIONS, clientConfig.frontend);
                     logger.add('获取前端配置成功');
                 }
+                keywordBudget = createKeywordBudget(OPTIONS.maxJobsPerKeyword);
                 const historyWasReset = applyJobHistoryResetToken();
                 const historyCount = Object.keys(loadJobHistory()).length;
                 if (historyWasReset) {

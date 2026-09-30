@@ -28,7 +28,7 @@ class StrategyQuestionTests(unittest.TestCase):
         self.assertEqual(result['profile']['risks'], ['2027年毕业，需确认求职类型'])
         self.assertIn(date.today().isoformat(), request.call_args.args[0][0]['content'])
 
-    def test_explicit_answers_change_final_search_and_filter_fields(self):
+    def test_explicit_answers_change_search_terms_without_platform_filters(self):
         model_answer = {
             'searchKeywords': ['旧方向'], 'targetRoles': ['旧方向'],
             'preferredSkills': ['旧技能'], 'excludedKeywords': [],
@@ -48,8 +48,8 @@ class StrategyQuestionTests(unittest.TestCase):
         self.assertEqual(result['searchKeywords'][:2], ['VLA算法实习生', '具身智能工程师'])
         self.assertEqual(result['preferredSkills'], ['π0', 'LeRobot'])
         self.assertEqual(result['excludedKeywords'], ['销售', '纯SLAM'])
-        self.assertEqual(result['cities'], ['北京', '天津'])
-        self.assertEqual(result['jobType'], '实习')
+        for obsolete in ('cities', 'jobType', 'minimumSalary', 'greeting', 'dailyLimit'):
+            self.assertNotIn(obsolete, result)
 
     def test_blank_city_and_exclusion_answers_mean_no_restriction(self):
         model_answer = {
@@ -62,8 +62,8 @@ class StrategyQuestionTests(unittest.TestCase):
                 'excludedKeywords': '', 'cities': '', 'jobType': '',
             })
         self.assertEqual(result['excludedKeywords'], [])
-        self.assertEqual(result['cities'], [])
-        self.assertEqual(result['jobType'], '')
+        self.assertNotIn('cities', result)
+        self.assertNotIn('jobType', result)
 
     def test_keyword_scoring_is_rebuilt_after_answers_change_roles(self):
         model_answer = {
@@ -90,9 +90,9 @@ class StrategyQuestionTests(unittest.TestCase):
         with patch.object(agent_service.QwenAgent, '__init__', return_value=None), \
              patch.object(agent_service.QwenAgent, '_request', return_value=model_answer):
             result = agent_service.QwenAgent().build_strategy({}, {}, [], {})
-        self.assertEqual(result['cities'], [])
-        self.assertEqual(result['jobType'], '')
-        self.assertEqual(result['minimumSalary'], '')
+        self.assertNotIn('cities', result)
+        self.assertNotIn('jobType', result)
+        self.assertNotIn('minimumSalary', result)
         self.assertEqual(result['companyBlockKeywords'], [])
 
 

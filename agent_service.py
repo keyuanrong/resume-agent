@@ -194,8 +194,8 @@ class QwenAgent:
             "没有简历证据的风险不要写入 risks。"
             "返回严格 JSON，字段必须包含 profile、draftStrategy；questions 可以为空列表，补充问题由系统生成。"
             "profile 包含 summary、skills、experienceHighlights、education、targetRoleHints、risks。"
-            "draftStrategy 包含 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、greeting、"
-            "dailyLimit、deliveryMode、resumeDelivery、targetRoles、preferredSkills、cities、jobType、minimumSalary。"
+            "draftStrategy 包含 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、"
+            "jobsPerKeyword、deliveryMode、resumeDelivery、targetRoles、preferredSkills。"
             "searchKeywords 必须是适合在招聘平台搜索的岗位名称短语，而非单个技能词；"
             "preferredSkills 是简历有证据的技术词；excludedKeywords 只放用户明确排除的方向，不凭猜测硬拦截。"
             "城市、薪资、公司规模、岗位性质和经验要求由招聘网站职位信息提供，不根据简历臆测筛选限制。"
@@ -207,7 +207,7 @@ class QwenAgent:
         )
         instruction = (
             "分析这份简历，给出候选人画像和初步岗位词表；不提出面试、Offer、入职时间等问题。"
-            "搜索关键词控制在 3 到 8 个；招呼语不超过 100 个中文字符；threshold 为 0 到 100 的整数。"
+            "搜索关键词控制在 3 到 8 个；threshold 为 0 到 100 的整数。"
         )
         if resume.get("kind") == "image":
             content: Any = [
@@ -248,7 +248,7 @@ class QwenAgent:
             "标题正向 60-100，描述正向 1-30，标题软扣分 1-45，描述软扣分 1-36。"
             "软扣分用于方向相邻但不够合适的岗位，不等于排除；不要生成 title_block_keywords。"
             "只返回 JSON 对象，字段为 searchKeywords、excludedKeywords、companyBlockKeywords、threshold、"
-            "greeting、dailyLimit、deliveryMode、resumeDelivery、targetRoles、preferredSkills、cities、jobType、minimumSalary、scoring。"
+            "jobsPerKeyword、deliveryMode、resumeDelivery、targetRoles、preferredSkills、scoring。"
         )
         data = {"profile": profile, "draftStrategy": draft, "questions": questions, "answers": answers}
         result = self._request([
@@ -261,12 +261,12 @@ class QwenAgent:
             if terms:
                 result[field] = terms
         result['excludedKeywords'] = _answer_terms(answers.get('excludedKeywords'))
-        for field in ('cities', 'companyBlockKeywords'):
-            result[field] = _answer_terms(answers.get(field))
+        result['companyBlockKeywords'] = _answer_terms(answers.get('companyBlockKeywords'))
         if result.get('targetRoles') and _answer_terms(answers.get('targetRoles')):
             result['searchKeywords'] = result['targetRoles'][:8]
-        result['jobType'] = str(answers.get('jobType') or '').strip()
-        result['minimumSalary'] = str(answers.get('minimumSalary') or '').strip()
+        for obsolete in ('dailyLimit', 'cities', 'jobType', 'minimumSalary', 'greeting'):
+            result.pop(obsolete, None)
+        result['jobsPerKeyword'] = 20
         proposal = result.get('scoring') if isinstance(result.get('scoring'), dict) else {}
         draft_scoring = draft.get('scoring') if isinstance(draft, dict) else {}
         for field in ('title_penalty_keywords', 'detail_negative_keywords'):

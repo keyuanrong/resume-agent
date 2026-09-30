@@ -29,11 +29,10 @@ Agent 和手动模式只负责生成统一求职策略。招聘平台差异只�
   "excludedKeywords": [],
   "companyBlockKeywords": [],
   "threshold": 80,
-  "dailyLimit": 30,
+  "jobsPerKeyword": 20,
   "deliveryMode": "review",
   "resumeDelivery": "platform_resume",
   "resumeId": null,
-  "greeting": "",
   "scoring": {
     "title_strong_keywords": {},
     "title_medium_keywords": {},

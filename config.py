@@ -32,6 +32,7 @@ DEFAULT_USER_CONFIG = {
         'preloadMaxRounds': 300,
         'maxJobsPerRound': 20,
         'maxJobsPerRun': 0,
+        'maxJobsPerKeyword': 20,
         'jobHistoryExpireDays': 7,
         'jobHistoryResetToken': '',
         'companyBlockKeywords': [],

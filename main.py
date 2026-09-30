@@ -314,17 +314,13 @@ def _effective_client_config() -> dict:
     keywords = [str(item).strip() for item in strategy.get('searchKeywords', []) if str(item).strip()]
     if keywords:
         client['tags'] = keywords
-    greeting = str(strategy.get('greeting') or '').strip()
-    if greeting:
-        client['introduce'] = greeting
     frontend = client.setdefault('frontend', {})
     frontend['thread'] = max(0, min(100, _int_or_default(strategy.get('threshold'), frontend.get('thread', 80))))
     frontend['companyBlockKeywords'] = [
         str(item).strip() for item in strategy.get('companyBlockKeywords', []) if str(item).strip()
     ]
-    daily_limit = max(0, _int_or_default(strategy.get('dailyLimit'), 0))
-    if daily_limit:
-        frontend['maxJobsPerRun'] = daily_limit
+    frontend['maxJobsPerRun'] = 0
+    frontend['maxJobsPerKeyword'] = strategy['jobsPerKeyword']
     # 仅自动投递模式才进入现有的 Boss 新消息检测/平台简历发送流程。
     # “只筛选”和“审核后发送”都不会由脚本自动联系候选岗位。
     execution_mode = product_config.get('executionMode', 'test')
@@ -333,11 +329,6 @@ def _effective_client_config() -> dict:
     client['deliveryMode'] = strategy.get('deliveryMode', 'review')
     client['executionMode'] = execution_mode
     client['platforms'] = copy.deepcopy(product_config.get('platforms', {}))
-    client['searchFilters'] = {
-        'cities': strategy.get('cities', []),
-        'jobType': strategy.get('jobType', ''),
-        'minimumSalary': strategy.get('minimumSalary', ''),
-    }
     client['resumeDelivery'] = strategy.get('resumeDelivery', 'platform_resume')
     client['resumeId'] = strategy.get('resumeId')
     return client
@@ -396,10 +387,12 @@ def _normalize_scoring(value: Any, strategy: dict) -> dict:
 
 def _normalize_strategy(strategy: dict, *, source: str, confirmed: bool) -> dict:
     normalized = dict(strategy or {})
-    for key in ('searchKeywords', 'excludedKeywords', 'companyBlockKeywords', 'targetRoles', 'preferredSkills', 'cities'):
+    for key in ('searchKeywords', 'excludedKeywords', 'companyBlockKeywords', 'targetRoles', 'preferredSkills'):
         normalized[key] = _split_terms(normalized.get(key))
     normalized['threshold'] = max(0, min(100, _int_or_default(normalized.get('threshold'), 80)))
-    normalized['dailyLimit'] = max(1, min(1000, _int_or_default(normalized.get('dailyLimit'), 30)))
+    normalized['jobsPerKeyword'] = max(1, min(1000, _int_or_default(normalized.get('jobsPerKeyword'), 20)))
+    for obsolete in ('dailyLimit', 'cities', 'jobType', 'minimumSalary', 'greeting'):
+        normalized.pop(obsolete, None)
     if normalized.get('deliveryMode') not in {'screen_only', 'review', 'auto'}:
         normalized['deliveryMode'] = 'review'
     if normalized.get('resumeDelivery') not in {'platform_resume', 'pdf', 'image', 'after_reply'}:
@@ -831,9 +824,6 @@ async def get_job_score(job: Any = Body(..., description="职位信息")):
     result = evaluateSingleRouteDelivery(raw_job, scoring=scoring)
     result['platform'] = platform
     if strategy:
-        greeting = str(strategy.get('greeting') or '').strip()
-        if greeting:
-            result['introduce'] = greeting
         all_text = f"{result.get('title', '')}\n{result.get('detail', '')}".lower()
         excluded = next((
             term for term in _split_terms(strategy.get('excludedKeywords'))

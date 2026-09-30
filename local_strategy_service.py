@@ -319,8 +319,6 @@ def generate_local_strategy(
         term: 14 for term in direction_negative if term not in scoring["title_block_keywords"]
     }
 
-    greeting_skills = "、".join(matched_skills[:4])
-    greeting = f"您好，我有{greeting_skills}相关项目经验，对该岗位很感兴趣，希望有机会进一步沟通。"
     strategy = {
         "confirmed": False,
         "source": "local_resume",
@@ -329,15 +327,11 @@ def generate_local_strategy(
         "excludedKeywords": excluded,
         "companyBlockKeywords": [],
         "threshold": 80,
-        "greeting": greeting[:100],
-        "dailyLimit": 30,
+        "jobsPerKeyword": 20,
         "deliveryMode": "review",
         "resumeDelivery": "platform_resume",
         "targetRoles": target_roles,
         "preferredSkills": matched_skills,
-        "cities": [],
-        "jobType": "",
-        "minimumSalary": "",
         "scoring": scoring,
     }
     evidence_lines = _unique([
