@@ -15,6 +15,7 @@
     </div>
     <div class="header-actions">
       <a class="button ghost" href="/job-report" target="_blank">处理记录</a>
+      <a class="button ghost" href="/job-history" target="_blank">七天去重</a>
       <span id="saveState" class="save-state">配置已加载</span>
     </div>
   </header>
@@ -227,22 +228,6 @@
           <div id="platformList" class="platform-list"></div>
         </section>
 
-        <section class="card run-card">
-          <p class="section-kicker">05 · 测试与执行</p>
-          <h2>开始运行</h2>
-          <p>保存并确认策略后，启动 Tampermonkey 脚本。Boss 已接入；智联支持单岗位人工确认沟通；前程无忧当前仅限测试。</p>
-          <div class="run-setting">
-            <label>运行环境
-              <select id="executionMode">
-                <option value="test">测试模式（推荐）</option>
-                <option value="live">正式模式</option>
-              </select>
-            </label>
-            <span id="executionModeHint">测试模式会运行完整流程，但在发送前强制停止。</span>
-          </div>
-          <a class="button primary full-width" href="https://www.zhipin.com/web/geek/job" target="_blank">打开 Boss 直聘</a>
-          <p class="muted test-entry">智联/前程无忧测试请安装项目中的 <code>multi_platform_test.user.js</code>。</p>
-        </section>
       </aside>
     </div>
   </main>

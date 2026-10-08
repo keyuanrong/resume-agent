@@ -85,10 +85,11 @@ test('list card ignores recruiter name and accepts only company source', () => {
   assert.equal(context.extractCardCompany(card), '成都长数机器人');
 });
 
-test('headhunter role in recruiter card skips a job even when JD has no clue', () => {
-  const info = extractDetailInfo([], '卢智泓\n聚猎 · 猎头顾问');
-  assert.equal(info.skip, true);
-  assert.match(info.skipReason, /猎头顾问/);
+test('headhunter role keeps the recruiting organization and remains scoreable', () => {
+  const info = extractDetailInfo([], '卢智泓\n聚猎 · 猎头顾问', '聚猎 · 猎头顾问');
+  assert.equal(info.company, '聚猎');
+  assert.equal(info.companyType, 'recruiter_agency');
+  assert.equal(info.skip, false);
 });
 
 test('ordinary in-house HR card is not classified as a headhunter', () => {
@@ -105,8 +106,9 @@ test('company and role line identifies an in-house company without using the rec
 test('headhunter organization is kept separate from the hiring company', () => {
   const info = extractDetailInfo([], '卢智泓\n聚猎 · 猎头顾问', '聚猎 · 猎头顾问');
   assert.equal(info.recruiterCompany, '聚猎');
-  assert.equal(info.company, '');
-  assert.equal(info.skip, true);
+  assert.equal(info.company, '聚猎');
+  assert.equal(info.companyType, 'recruiter_agency');
+  assert.equal(info.skip, false);
 });
 
 test('a recruiter name without a company and role line stays unknown', () => {

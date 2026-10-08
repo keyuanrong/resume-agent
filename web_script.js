@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         goodJobs
 // @namespace    http://tampermonkey.net/
-// @version      2026-09-30
+// @version      2026-10-03
 // @description  goodJobs篡改猴插件
 // @match        https://www.zhipin.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=zhipin.com
@@ -38,7 +38,7 @@
         serverHost: 'http://127.0.0.1:8000', // 本地服务的主机地址
         thread: 50, // 分数阈值，低于这个就不发消息了
         timestampTimeout: 3000, // 时间戳过期时间，单位毫秒，根据当前网络设定，建议不要太大。
-        onlyGreet: false, // 是否只打招呼，默认为false，即打招呼和代聊天
+        onlyGreet: true, // 产品只筛选和打招呼，不处理后续聊天或自动发送简历
         manualFilterWaitMs: 10000, // 每轮搜索后留给用户手动筛选的时间
         roundRestartDelayMs: 2000, // 本轮结束后，启动下一轮前的缓冲时间
         maxEmptyRounds: 3, // 连续多少轮没有拿到新岗位后停止，避免空转
@@ -76,7 +76,7 @@
                 JOBNAME: 'h1', // 职位名称
                 SALARY: '.salary', // 职位薪资
                 DETAIL: '.job-sec-text', // 职位详情
-                COMPANY: '.job-detail-company .company-name, .job-detail-company a[href*="/gongsi/"], .job-detail-company a[href*="/company/"], .sider-company .company-name, .sider-company a[href*="/gongsi/"], .sider-company a[href*="/company/"], .job-boss-info .company-name, .job-boss-info .boss-company-name, .job-boss-info .boss-info-company, .job-boss-info a[href*="/gongsi/"], .job-boss-info a[href*="/company/"]', // 仅取明确的公司字段或公司链接
+                COMPANY: '.job-detail-company .company-name, .job-detail-company a[href*="/gongsi/"], .job-detail-company a[href*="/company/"], .sider-company .company-name, .sider-company a[href*="/gongsi/"], .sider-company a[href*="/company/"]', // 招聘企业字段；招聘者所属机构单独从招聘者卡片提取
                 CHATURL: 'redirect-url', // 聊天链接
             },
             CHAT: {
@@ -530,6 +530,10 @@
             return new Promise((resolve, reject) => this.__http('/client-config').then(resolve).catch(reject));
         }
 
+        getJobHistoryControl() {
+            return new Promise((resolve, reject) => this.__http('/api/job-history/control').then(resolve).catch(reject));
+        }
+
         /**
          * 获取职位匹配度
          * @param {string} title 职位标题
@@ -537,8 +541,8 @@
          * @param {string} detail 职位描述
          * @param {string} company 公司名称
          */
-        getJobScore(title, salary, detail, company = '') {
-            const data = { platform: 'boss', title, company, salary, detail };
+        getJobScore(title, salary, detail, company = '', companyType = '', recruiterCompany = '') {
+            const data = { platform: 'boss', title, company, companyType, recruiterCompany, salary, detail };
             return new Promise((resolve, reject) => {
                 this.__http('/get-job-score', 'POST', JSON.stringify(data)).then(resolve).catch(reject);
             });
@@ -775,6 +779,7 @@
             const jobHistoryStorageKey = 'goodJobs.jobHistory.v1';
             const jobHistoryResetStorageKey = 'goodJobs.jobHistoryResetToken.v1';
             let jobHistory = null;
+            let jobHistoryControlTimer = null;
             window.addEventListener('storage', (event) => {
                 if (event.key === jobHistoryStorageKey) jobHistory = null;
             });
@@ -833,14 +838,28 @@
 
             const wasProcessedInCurrentRun = (href) => processedJobHrefs.has(getJobHistoryKey(href));
 
-            const applyJobHistoryResetToken = () => {
-                const resetToken = String(OPTIONS.jobHistoryResetToken || '').trim();
+            const applyJobHistoryResetToken = (incomingToken = OPTIONS.jobHistoryResetToken) => {
+                const resetToken = String(incomingToken || '').trim();
                 if (!resetToken) return false;
                 if (localStorage.getItem(jobHistoryResetStorageKey) === resetToken) return false;
                 localStorage.removeItem(jobHistoryStorageKey);
                 localStorage.setItem(jobHistoryResetStorageKey, resetToken);
                 jobHistory = null;
                 return true;
+            };
+
+            const startJobHistoryControlSync = () => {
+                if (jobHistoryControlTimer) return;
+                jobHistoryControlTimer = window.setInterval(async () => {
+                    try {
+                        const control = await api.getJobHistoryControl();
+                        if (applyJobHistoryResetToken(control?.resetToken)) {
+                            logger.add('已从控制台同步清空七天岗位去重记录');
+                        }
+                    } catch (e) {
+                        // 后台暂时不可用时保留本地记录，下次轮询自动重试。
+                    }
+                }, 3000);
             };
 
             // 日志启动暂停事件
@@ -1111,9 +1130,15 @@
                     skip: true,
                     skipReason: `获取职位详情超时（>${(OPTIONS.detailTimeout / 1000).toFixed(0)}s）`,
                 }));
-                if (!info.agencyRole && !isUsableCompanyName(info.company)) {
-                    const cardCompany = jobCompanyByHref.get(getJobHistoryKey(href)) || '';
+                const cardCompany = jobCompanyByHref.get(getJobHistoryKey(href)) || '';
+                const cardHasDifferentCompany = isUsableCompanyName(cardCompany)
+                    && normalizeCompanyName(cardCompany) !== normalizeCompanyName(info.recruiterCompany);
+                if (info.companyType === 'recruiter_agency' && cardHasDifferentCompany) {
+                    info.company = cardCompany;
+                    info.companyType = 'list_card_company';
+                } else if (!isUsableCompanyName(info.company)) {
                     info.company = isUsableCompanyName(cardCompany) ? cardCompany : '';
+                    if (info.company) info.companyType = 'list_card_company';
                 }
                 return info;
             };
@@ -1251,11 +1276,6 @@
                     logger.add(`正在获取职位详情`);
                     const jobInfo = await getJobInfo(href);
                     if (jobInfo.skip) {
-                        // 已明确识别的猎头岗位也要去重，避免下一轮反复打开并占用检查名额。
-                        if (jobInfo.agencyRole) {
-                            processedJobHrefs.add(getJobHistoryKey(href));
-                            rememberCheckedJob(href);
-                        }
                         if (jobInfo.recruiterCompany) {
                             logger.add(`招聘者所属机构：[${jobInfo.recruiterCompany}]`);
                         }
@@ -1264,6 +1284,7 @@
                             action: 'job_skip',
                             scene: 'search',
                             company: jobInfo.company || null,
+                            companyType: jobInfo.companyType || null,
                             recruiterCompany: jobInfo.recruiterCompany || null,
                             title: jobInfo.title || null,
                             salary: jobInfo.salary || null,
@@ -1274,7 +1295,9 @@
                     }
                     processedJobHrefs.add(getJobHistoryKey(href));
                     if (isUsableCompanyName(jobInfo.company)) {
-                        logger.add(`已识别公司：[${jobInfo.company}]`);
+                        logger.add(jobInfo.companyType === 'recruiter_agency'
+                            ? `已识别招聘机构：[${jobInfo.company}]（${jobInfo.agencyRole || '猎头'}）`
+                            : `已识别公司：[${jobInfo.company}]`);
                     } else {
                         logger.add(`岗位 [${jobInfo.title}] 未识别到公司名称`);
                     }
@@ -1286,6 +1309,8 @@
                             action: 'job_company_unknown',
                             scene: 'search',
                             company: null,
+                            companyType: jobInfo.companyType,
+                            recruiterCompany: jobInfo.recruiterCompany,
                             title: jobInfo.title,
                             salary: jobInfo.salary,
                         });
@@ -1299,6 +1324,8 @@
                             action: 'job_company_blocked',
                             scene: 'search',
                             company: jobInfo.company,
+                            companyType: jobInfo.companyType,
+                            recruiterCompany: jobInfo.recruiterCompany,
                             title: jobInfo.title,
                             salary: jobInfo.salary,
                             matchedKeyword: blockedCompanyKeyword,
@@ -1313,6 +1340,8 @@
                             action: 'job_already_talked',
                             scene: 'search',
                             company: jobInfo.company,
+                            companyType: jobInfo.companyType,
+                            recruiterCompany: jobInfo.recruiterCompany,
                             title: jobInfo.title,
                             salary: jobInfo.salary,
                         });
@@ -1320,13 +1349,22 @@
                     }
                     // 否则发送消息计算匹配度
                     logger.add(`开始计算职位 [${jobInfo.title}] 的匹配度`);
-                    const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail, jobInfo.company);
+                    const decision = await api.getJobScore(
+                        jobInfo.title,
+                        jobInfo.salary,
+                        jobInfo.detail,
+                        jobInfo.company,
+                        jobInfo.companyType,
+                        jobInfo.recruiterCompany,
+                    );
                     logger.add(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
                     await logAction({
                         action: 'job_decision_consumed',
                         scene: 'search',
                         decisionId: decision.decisionId,
                         company: jobInfo.company,
+                        companyType: jobInfo.companyType,
+                        recruiterCompany: jobInfo.recruiterCompany,
                         title: jobInfo.title,
                         salary: jobInfo.salary,
                         score: decision.score,
@@ -1341,6 +1379,8 @@
                             scene: 'search',
                             decisionId: decision.decisionId,
                             company: jobInfo.company,
+                            companyType: jobInfo.companyType,
+                            recruiterCompany: jobInfo.recruiterCompany,
                             title: jobInfo.title,
                             salary: jobInfo.salary,
                             score: decision.score,
@@ -1360,6 +1400,8 @@
                             scene: 'search',
                             decisionId: decision.decisionId,
                             company: jobInfo.company,
+                            companyType: jobInfo.companyType,
+                            recruiterCompany: jobInfo.recruiterCompany,
                             title: jobInfo.title,
                             salary: jobInfo.salary,
                             resumeIndex: decision.resumeIndex,
@@ -1374,6 +1416,8 @@
                                     scene: 'search',
                                     decisionId: decision.decisionId,
                                     company: jobInfo.company,
+                                    companyType: jobInfo.companyType,
+                                    recruiterCompany: jobInfo.recruiterCompany,
                                     title: jobInfo.title,
                                     score: decision.score,
                                 });
@@ -1388,6 +1432,8 @@
                                     scene: 'search',
                                     decisionId: decision.decisionId,
                                     company: jobInfo.company,
+                                    companyType: jobInfo.companyType,
+                                    recruiterCompany: jobInfo.recruiterCompany,
                                     title: jobInfo.title,
                                     salary: jobInfo.salary,
                                     score: decision.score,
@@ -1400,6 +1446,9 @@
                                         await logAction({
                                             action: 'chat_view_opened',
                                             scene: 'search',
+                                            company: jobInfo.company,
+                                            companyType: jobInfo.companyType,
+                                            recruiterCompany: jobInfo.recruiterCompany,
                                             title: jobInfo.title,
                                             chatUrl: jobInfo.chatUrl,
                                         });
@@ -1408,6 +1457,9 @@
                                         await logAction({
                                             action: 'chat_view_blocked',
                                             scene: 'search',
+                                            company: jobInfo.company,
+                                            companyType: jobInfo.companyType,
+                                            recruiterCompany: jobInfo.recruiterCompany,
                                             title: jobInfo.title,
                                             chatUrl: jobInfo.chatUrl,
                                         });
@@ -1421,6 +1473,8 @@
                                     scene: 'search',
                                     decisionId: decision.decisionId,
                                     company: jobInfo.company,
+                                    companyType: jobInfo.companyType,
+                                    recruiterCompany: jobInfo.recruiterCompany,
                                     title: jobInfo.title,
                                     salary: jobInfo.salary,
                                     score: decision.score,
@@ -1450,6 +1504,8 @@
                                 scene: 'search',
                                 decisionId: decision.decisionId,
                                 company: jobInfo.company,
+                                companyType: jobInfo.companyType,
+                                recruiterCompany: jobInfo.recruiterCompany,
                                 title: jobInfo.title,
                                 score: decision.score,
                             });
@@ -1464,6 +1520,8 @@
                             scene: 'search',
                             decisionId: decision.decisionId,
                             company: jobInfo.company,
+                            companyType: jobInfo.companyType,
+                            recruiterCompany: jobInfo.recruiterCompany,
                             title: jobInfo.title,
                             salary: jobInfo.salary,
                             score: decision.score,
@@ -1593,6 +1651,7 @@
                 }
                 keywordBudget = createKeywordBudget(OPTIONS.maxJobsPerKeyword);
                 const historyWasReset = applyJobHistoryResetToken();
+                startJobHistoryControlSync();
                 const historyCount = Object.keys(loadJobHistory()).length;
                 if (historyWasReset) {
                     logger.add('已按配置自动清空一次岗位历史');
@@ -1685,17 +1744,18 @@
                 const recruiterCompany = extractRecruiterCompany(recruiter);
                 const recruiterText = recruiter?.innerText || '';
                 const agencyRole = recruiterText.match(/猎头顾问|猎头经理|猎头招聘|猎头服务|代理招聘|代招/);
-                const company = agencyRole ? '' : (getCompanyName() || recruiterCompany);
+                const hiringCompany = getCompanyName();
+                const company = hiringCompany || recruiterCompany;
+                const companyType = hiringCompany
+                    ? 'hiring_company'
+                    : (recruiterCompany ? (agencyRole ? 'recruiter_agency' : 'recruiter_company') : 'unknown');
                 const actionText = chatBtn ? chatBtn.innerText.trim() : '';
                 const chatUrl = chatBtn && chatBtn.getAttribute(SELECTORS.ZHIPIN.DETAIL.CHATURL);
                 const addUrl = chatBtn && chatBtn.dataset.url;
                 let skip = false;
                 let skipReason = '';
 
-                if (agencyRole) {
-                    skip = true;
-                    skipReason = `招聘者信息标注为${agencyRole[0]}`;
-                } else if (!chatBtn) {
+                if (!chatBtn) {
                     skip = true;
                     skipReason = '未找到立即沟通按钮';
                 } else if (actionText.indexOf('立即沟通') === -1) {
@@ -1709,6 +1769,7 @@
                 return {
                     title,
                     company,
+                    companyType,
                     recruiterCompany,
                     agencyRole: agencyRole?.[0] || '',
                     salary,
@@ -1923,39 +1984,6 @@
                 return await getMsgs();
             };
 
-            // 发送简历
-            const sendResume = async (resumeIndex = OPTIONS.resumeIndex) => {
-                const sendBtn = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMESEND);
-                sendBtn.click();
-
-                // 可能是弹一个小窗
-                const smallDialog = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMEMODAL).catch(() => null);
-                if (smallDialog) {
-                    smallDialog.querySelector(SELECTORS.ZHIPIN.CHAT.RESUMEMODALCONFIRM).click();
-                    await sendMsg('已发送，请查收');
-                    return {
-                        mode: 'small_dialog',
-                        selectedResumeIndex: resumeIndex,
-                    };
-                }
-
-                // 弹出大窗让选择
-                const resumeCtn = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMELIST);
-                const confirm = await tools.endlessFind(SELECTORS.ZHIPIN.CHAT.RESUMESENDCONFIRM);
-                const resumes = resumeCtn.querySelectorAll(SELECTORS.ZHIPIN.CHAT.RESUMELISTITEM);
-                const fallbackIndex = resumes[resumeIndex] ? resumeIndex : (resumes[OPTIONS.resumeIndex] ? OPTIONS.resumeIndex : 0);
-                const resume = resumes[fallbackIndex];
-                await tools.asyncSleep(300);
-                resume.click();
-                await tools.asyncSleep(300);
-                confirm.click();
-                await sendMsg('已发送，请查收');
-                return {
-                    mode: 'resume_list',
-                    selectedResumeIndex: fallbackIndex,
-                };
-            };
-
             // 发送作品集
             const sendWorks = async () => {
                 logger.add('sendWks');
@@ -2056,7 +2084,10 @@
                                 const jobInfo = await pendingJobInfo;
                                 // 获取职位匹配度
                                 status(`开始计算职位 [${jobInfo.title}] 的匹配度`);
-                                const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail, jobInfo.company);
+                                const decision = await api.getJobScore(
+                                    jobInfo.title, jobInfo.salary, jobInfo.detail, jobInfo.company,
+                                    jobInfo.companyType, jobInfo.recruiterCompany,
+                                );
                                 status(`匹配度: ${decision.score} | 简历索引: ${decision.resumeIndex}`);
                                 await logAction({
                                     action: 'job_decision_consumed',
@@ -2105,32 +2136,8 @@
                                 }
                             }
                             let isChat = true;
-                            // 只要对方发来新消息且还没发过简历，就直接发送简历，不再调用大模型聊天
-                            if (!chatInfo.resumeSended) {
-                                isChat = false;
-                                const pendingJobInfo = this.broadcast.receive(
-                                    this.targets.detail,
-                                    this.bcTypes.GET_JOB_INFO,
-                                    OPTIONS.detailTimeout
-                                );
-                                localStorage.setItem(this.targets.chat, new Date().getTime());
-                                chatInfo.jobEl.click();
-                                status(`正在获取职位详情（用于确定简历）`);
-                                const jobInfo = await pendingJobInfo;
-                                const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail, jobInfo.company);
-                                status(`检测到新消息，直接发送简历（简历索引 ${decision.resumeIndex}）`);
-                                const resumeResult = await sendResume(decision.resumeIndex);
-                                await logAction({
-                                    action: 'resume_sent',
-                                    scene: 'chat',
-                                    title: jobInfo.title,
-                                    salary: jobInfo.salary,
-                                    requestedResumeIndex: decision.resumeIndex,
-                                    selectedResumeIndex: resumeResult?.selectedResumeIndex ?? decision.resumeIndex,
-                                    sendMode: resumeResult?.mode || 'unknown',
-                                });
-                                status('发送成功');
-                            }
+                            // 产品范围到首次打招呼为止；招聘者回复后不自动聊天或发送简历。
+                            if (!chatInfo.resumeSended) status('检测到招聘者新消息，已留给用户手动处理');
                             // 是否需要作品集（当前关闭自动发送，仅保留原入口）
                             if (chatInfo.needWorks && !chatInfo.worksSended) {
                                 isChat = false;

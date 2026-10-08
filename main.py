@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import html
 import random
@@ -25,6 +25,7 @@ from resume_service import delete_resume, get_resume_for_agent, get_resume_text_
 app = FastAPI()
 LOG_PATH = Path(__file__).resolve().parent / 'job_decisions.jsonl'
 ACTION_LOG_PATH = Path(__file__).resolve().parent / 'job_actions.jsonl'
+JOB_HISTORY_CONTROL_PATH = Path(__file__).resolve().parent / 'data' / 'job_history_control.json'
 STATIC_PATH = Path(__file__).resolve().parent / 'static'
 INVALID_COMPANY_NAMES = {'', '公司', '公司信息', '企业', '企业信息', '工商信息', '查看公司', '所属公司'}
 
@@ -34,29 +35,62 @@ def _clean_company(value: Any) -> str:
     return '' if company in INVALID_COMPANY_NAMES else company
 
 
-def _zhaopin_contact_attempt_state(company: str, title: str) -> str:
+def _report_company(record: dict) -> str:
+    company = _clean_company(record.get('company'))
+    company_type = str(record.get('companyType') or '').strip()
+    if company:
+        return f'招聘机构：{company}' if company_type == 'recruiter_agency' else company
+    recruiter_company = _clean_company(record.get('recruiterCompany'))
+    if recruiter_company:
+        return f'招聘机构：{recruiter_company}'
+    return '未记录'
+
+
+def _platform_contact_attempt_state(platform: str, company: str, title: str) -> str:
     normalized_company = re.sub(r'\s+', '', company).lower()
     normalized_title = re.sub(r'\s+', '', title).lower()
     if not normalized_company or not normalized_title:
         return 'none'
+    cutoff = datetime.now() - timedelta(days=7)
+    cleared_at_raw = str(_job_history_control().get('clearedAt') or '')
+    try:
+        cleared_at = datetime.fromisoformat(cleared_at_raw)
+    except ValueError:
+        cleared_at = datetime.min
+    effective_cutoff = max(cutoff, cleared_at)
     for action in reversed(_read_jsonl(ACTION_LOG_PATH)):
-        if action.get('platform') != 'zhaopin':
+        try:
+            logged_at = datetime.fromisoformat(str(action.get('loggedAt') or ''))
+        except ValueError:
+            continue
+        if logged_at <= effective_cutoff:
+            continue
+        action_platform = action.get('platform')
+        if not (
+            action_platform == platform
+            or platform == 'job51' and action_platform == 'job51_campus'
+            or platform == 'job51_campus' and action_platform == 'job51'
+        ):
             continue
         action_company = re.sub(r'\s+', '', str(action.get('company') or '')).lower()
         action_title = re.sub(r'\s+', '', str(action.get('title') or '')).lower()
         if action_company != normalized_company or action_title != normalized_title:
             continue
         action_name = action.get('action')
-        if action_name == 'zhaopin_greeting_sent':
+        if action_name in {
+            'zhaopin_greeting_sent', 'zhaopin_application_sent',
+            'job51_application_sent', 'job51_already_applied',
+            'job51_campus_application_sent', 'job51_campus_already_applied',
+        }:
             return 'attempted'
-        if action_name == 'zhaopin_contact_not_sent':
+        if action_name in {'zhaopin_contact_not_sent', 'job51_application_not_sent', 'job51_campus_redirect_skipped'}:
             return 'retry_safe'
-        if action_name == 'zhaopin_greeting_failed' and re.search(
+        if action_name in {'zhaopin_greeting_failed', 'job51_application_failed'} and re.search(
             r'凭证失效|登录(?:已)?失效|登录过期|请重新登录',
             str(action.get('reason') or ''),
         ):
             return 'retry_safe'
-        if action_name == 'zhaopin_contact_clicking':
+        if action_name in {'zhaopin_contact_clicking', 'job51_application_clicking'}:
             return 'attempted'
     return 'none'
 
@@ -68,11 +102,44 @@ def _json_line(record: dict) -> str:
 
 def _extract_raw_section(raw_job: str, heading: str) -> str:
     match = re.search(
-        rf'^# {re.escape(heading)}\s*\n(.*?)(?=\n\s*\n# |\Z)',
+        rf'^# {re.escape(heading)}[ \t]*\r?\n(.*?)(?=\r?\n\r?\n# |\Z)',
         raw_job or '',
         flags=re.MULTILINE | re.DOTALL,
     )
     return match.group(1).strip() if match else ''
+
+
+REPORT_SALARY_PATTERN = re.compile(
+    r'\d+(?:\.\d+)?\s*(?:元|[Kk]|千|万)?\s*(?:-|–|—|~|至)\s*'
+    r'\d+(?:\.\d+)?\s*(?:元|[Kk]|千|万)'
+    r'(?:\s*/\s*(?:天|月|年)|\s*[·x×]\s*\d+\s*薪)?'
+)
+
+
+def _report_salary(value: Any, fallback_text: Any = '') -> str:
+    salary = str(value or '').strip()
+    if (
+        not salary
+        or salary == '[object Object]'
+        or len(salary) > 80
+        or '\n' in salary
+        or salary.startswith('#')
+    ):
+        salary = ''
+    if salary:
+        matched = REPORT_SALARY_PATTERN.search(salary)
+        if matched:
+            return matched.group(0)
+        if salary in {'面议', '薪资面议', '薪资保密'}:
+            return salary
+    # 旧记录中某些新版 51job 卡片没有独立薪资节点，但卡片摘要含薪资。
+    # 只对短摘要回退提取，避免把完整 JD 中的奖金或博士年薪误当岗位薪资。
+    fallback = ' '.join(str(fallback_text or '').split())
+    if 0 < len(fallback) <= 300:
+        matched = REPORT_SALARY_PATTERN.search(fallback)
+        if matched:
+            return matched.group(0)
+    return '未记录'
 
 
 def _normalize_job_payload(job: Any) -> tuple[str, str, str, str]:
@@ -94,6 +161,8 @@ def append_job_decision_log(result: dict, raw_job: str, delay_ms: int):
         'decisionId': result.get('decisionId'),
         'platform': result.get('platform'),
         'company': result.get('company'),
+        'companyType': result.get('company_type'),
+        'recruiterCompany': result.get('recruiter_company'),
         'title': result.get('title'),
         'salary': result.get('salary'),
         'detail': result.get('detail'),
@@ -150,6 +219,23 @@ def _read_jsonl(path: Path) -> list[dict]:
     return records
 
 
+def _job_history_control() -> dict:
+    if not JOB_HISTORY_CONTROL_PATH.exists():
+        return {'resetToken': '', 'clearedAt': ''}
+    try:
+        value = json.loads(JOB_HISTORY_CONTROL_PATH.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {'resetToken': '', 'clearedAt': ''}
+    return value if isinstance(value, dict) else {'resetToken': '', 'clearedAt': ''}
+
+
+def _write_job_history_control(value: dict) -> None:
+    JOB_HISTORY_CONTROL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = JOB_HISTORY_CONTROL_PATH.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(JOB_HISTORY_CONTROL_PATH)
+
+
 REPORT_ACTION_RESULTS = {
     'job_skip': '读取跳过',
     'job_company_blocked': '公司屏蔽',
@@ -163,18 +249,77 @@ REPORT_ACTION_RESULTS = {
     'greet_sent': '已沟通',
     'greet_api_succeeded': '已沟通',
     'zhaopin_greeting_sent': '已沟通',
+    'zhaopin_application_sent': '已投递',
+    'job51_application_sent': '已投递',
+    'chat_greet_sent': '已沟通',
+    'greet_message_sent': '已沟通',
     'greet_api_failed': '沟通失败',
     'greet_queue_failed': '沟通失败',
     'greet_failed': '沟通失败',
     'greet_timeout': '沟通超时',
     'zhaopin_greeting_failed': '沟通失败',
+    'job51_application_failed': '投递失败',
+    'job51_campus_redirect_skipped': '校招外链，未投递',
+    'job51_campus_application_sent': '校招平台已投递',
+    'job51_campus_already_applied': '校招平台此前已投递',
+    'job51_campus_manual_required': '校招平台需人工完成',
+    'job51_campus_application_failed': '校招平台投递失败',
+    'job51_application_cancelled': '已取消',
+    'job51_application_not_sent': '未投递',
+    'job51_already_applied': '此前已投递',
+    'job51_duplicate_attempt_blocked': '重复投递已拦截',
     'zhaopin_greeting_cancelled': '已取消',
+    'chat_greet_failed': '沟通失败',
+    'greet_message_failed': '沟通失败',
     'zhaopin_contact_not_sent': '未发送',
     'zhaopin_duplicate_attempt_blocked': '重复沟通已拦截',
     'greet_duplicate_blocked': '重复跳过',
     'platform_test_planned': '测试模式已拦截',
     'platform_live_planned': '等待人工确认',
     'platform_test_failed': '测试链路失败',
+}
+
+REPORT_GREETING_RESULTS = {
+    'job_already_talked': '此前已沟通',
+    'job_below_threshold': '未打招呼（低于阈值）',
+    'job_screened_only': '未打招呼（仅筛选）',
+    'job_requires_review': '未打招呼（待审核）',
+    'job_skip': '未打招呼',
+    'job_company_blocked': '未打招呼（公司屏蔽）',
+    'job_company_unknown': '未打招呼（公司未知）',
+    'greet_queued': '准备打招呼',
+    'chat_open_requested': '正在打开沟通',
+    'greet_sent': '已打招呼',
+    'greet_api_succeeded': '已打招呼',
+    'zhaopin_greeting_sent': '已打招呼',
+    'zhaopin_application_sent': '已投递在线简历并建立沟通',
+    'job51_application_sent': '已投递前程无忧平台简历',
+    'chat_greet_sent': '已打招呼',
+    'greet_message_sent': '已打招呼',
+    'greet_api_failed': '打招呼失败',
+    'greet_queue_failed': '打招呼失败',
+    'greet_failed': '打招呼失败',
+    'greet_timeout': '打招呼超时',
+    'zhaopin_greeting_failed': '打招呼失败',
+    'job51_application_failed': '投递失败',
+    'job51_campus_redirect_skipped': '未投递（需前往应届生平台）',
+    'job51_campus_application_sent': '已投递校招平台简历',
+    'job51_campus_already_applied': '此前已投递校招职位',
+    'job51_campus_manual_required': '未投递（校招需人工完成）',
+    'job51_campus_application_failed': '校招投递失败',
+    'job51_application_cancelled': '未投递（已取消）',
+    'job51_application_not_sent': '未投递',
+    'job51_already_applied': '此前已投递',
+    'job51_duplicate_attempt_blocked': '未投递（重复拦截）',
+    'zhaopin_greeting_cancelled': '已取消',
+    'chat_greet_failed': '打招呼失败',
+    'greet_message_failed': '打招呼失败',
+    'zhaopin_contact_not_sent': '未打招呼',
+    'zhaopin_duplicate_attempt_blocked': '未打招呼（重复拦截）',
+    'greet_duplicate_blocked': '未打招呼（重复拦截）',
+    'platform_test_planned': '未打招呼（测试模式）',
+    'platform_live_planned': '未打招呼（待确认）',
+    'platform_test_failed': '未打招呼（链路失败）',
 }
 
 
@@ -185,6 +330,7 @@ def build_job_report_rows() -> list[dict]:
     ]
     actions = _read_jsonl(ACTION_LOG_PATH)
     result_by_decision_id = {}
+    greeting_by_decision_id = {}
     planned_by_decision_id = {}
     actions_by_job = {}
     for action in actions:
@@ -194,6 +340,9 @@ def build_job_report_rows() -> list[dict]:
         decision_id = action.get('decisionId')
         if decision_id:
             result_by_decision_id[decision_id] = result
+            greeting_by_decision_id[decision_id] = REPORT_GREETING_RESULTS.get(
+                action.get('action'), '未打招呼'
+            )
             planned = action.get('plannedActions')
             if isinstance(planned, list):
                 planned_by_decision_id[decision_id] = '、'.join(
@@ -202,16 +351,24 @@ def build_job_report_rows() -> list[dict]:
                     if item
                 )
         key = (action.get('title') or '', action.get('salary') or '')
-        actions_by_job.setdefault(key, []).append((action.get('loggedAt') or '', result))
+        actions_by_job.setdefault(key, []).append((
+            action.get('loggedAt') or '',
+            result,
+            REPORT_GREETING_RESULTS.get(action.get('action'), '未打招呼'),
+        ))
 
     rows = []
     for decision in decisions:
         raw_job = decision.get('rawJob') or ''
         title = decision.get('title') or _extract_raw_section(raw_job, '职位名称') or '未识别岗位'
-        salary = decision.get('salary') or _extract_raw_section(raw_job, '薪资范围') or '未记录'
-        company = _clean_company(decision.get('company')) or '未记录'
+        salary = _report_salary(
+            decision.get('salary') or _extract_raw_section(raw_job, '薪资范围'),
+            decision.get('detail') or _extract_raw_section(raw_job, '职位描述'),
+        )
+        company = _report_company(decision)
         logged_at = decision.get('loggedAt') or ''
         result = result_by_decision_id.get(decision.get('decisionId'))
+        greeting_status = greeting_by_decision_id.get(decision.get('decisionId'))
         if not result:
             candidates = actions_by_job.get((title, salary), [])
             nearby = []
@@ -224,8 +381,11 @@ def build_job_report_rows() -> list[dict]:
                     nearby.append(item)
             if nearby:
                 result = nearby[-1][1]
+                greeting_status = nearby[-1][2]
         if not result:
             result = '已评分'
+        if not greeting_status:
+            greeting_status = '未打招呼'
         rows.append({
             'loggedAt': logged_at,
             'platform': decision.get('platform') or 'boss',
@@ -233,6 +393,7 @@ def build_job_report_rows() -> list[dict]:
             'title': title,
             'salary': salary,
             'score': decision.get('score'),
+            'greetingStatus': greeting_status,
             'plannedActions': planned_by_decision_id.get(decision.get('decisionId')) or '无',
             'result': result,
         })
@@ -247,15 +408,73 @@ def build_job_report_rows() -> list[dict]:
         rows.append({
             'loggedAt': action.get('loggedAt') or '',
             'platform': action.get('platform') or 'boss',
-            'company': _clean_company(action.get('company')) or '未记录',
+            'company': _report_company(action),
             'title': action.get('title') or '未识别岗位',
-            'salary': action.get('salary') or '未记录',
+            'salary': _report_salary(action.get('salary')),
             'score': action.get('score'),
+            'greetingStatus': REPORT_GREETING_RESULTS.get(action.get('action'), '未打招呼'),
             'plannedActions': '无',
             'result': REPORT_ACTION_RESULTS[action.get('action')],
         })
     rows.sort(key=lambda row: row['loggedAt'], reverse=True)
     return rows
+
+
+def build_job_history_rows(expire_days: int = 7) -> list[dict]:
+    """用服务端处理日志展示浏览器七天去重记录的可读信息。"""
+    now = datetime.now()
+    cutoff = now - timedelta(days=max(0, expire_days))
+    cleared_at_raw = str(_job_history_control().get('clearedAt') or '')
+    try:
+        cleared_at = datetime.fromisoformat(cleared_at_raw)
+    except ValueError:
+        cleared_at = datetime.min
+    effective_cutoff = max(cutoff, cleared_at)
+    rows = []
+    seen = set()
+    for row in build_job_report_rows():
+        try:
+            checked_at = datetime.fromisoformat(str(row.get('loggedAt') or ''))
+        except ValueError:
+            continue
+        if checked_at <= effective_cutoff:
+            continue
+        company = str(row.get('company') or '')
+        title = str(row.get('title') or '')
+        if company == '未记录' and title == '未识别岗位':
+            continue
+        key = (company, title, str(row.get('salary') or ''))
+        if key in seen:
+            continue
+        seen.add(key)
+        expires_at = checked_at + timedelta(days=expire_days)
+        remaining_seconds = max(0, int((expires_at - now).total_seconds()))
+        remaining_days, remainder = divmod(remaining_seconds, 24 * 60 * 60)
+        remaining_hours = remainder // (60 * 60)
+        rows.append({
+            **row,
+            'expiresAt': expires_at.isoformat(timespec='seconds'),
+            'remaining': f'{remaining_days}天{remaining_hours}小时',
+        })
+    return rows
+
+
+@app.get('/api/job-history/control', summary='获取七天去重控制状态')
+async def api_job_history_control():
+    control = _job_history_control()
+    return {
+        'resetToken': str(control.get('resetToken') or ''),
+        'clearedAt': str(control.get('clearedAt') or ''),
+    }
+
+
+@app.post('/api/job-history/clear', summary='一键清空七天去重记录')
+async def api_clear_job_history():
+    cleared_at = datetime.now().isoformat(timespec='seconds')
+    control = {'resetToken': uuid.uuid4().hex, 'clearedAt': cleared_at}
+    _write_job_history_control(control)
+    append_job_action_log({'action': 'job_history_cleared', 'scene': 'product_console'})
+    return {'success': True, **control}
 
 
 @app.get('/job-report', response_class=HTMLResponse, summary='查看岗位处理报告')
@@ -267,8 +486,9 @@ async def get_job_report():
         f'<td>{html.escape(str(row["platform"]))}</td>'
         f'<td>{html.escape(str(row["company"]))}</td>'
         f'<td>{html.escape(str(row["title"]))}</td>'
-        f'<td>{html.escape(str(row["salary"]))}</td>'
         f'<td class="score">{html.escape(str(row["score"] if row["score"] is not None else "-"))}</td>'
+        f'<td>{html.escape(str(row.get("greetingStatus") or "未打招呼"))}</td>'
+        f'<td>{html.escape(str(row["salary"]))}</td>'
         f'<td>{html.escape(str(row.get("plannedActions") or "无"))}</td>'
         f'<td>{html.escape(str(row["result"]))}</td>'
         '</tr>'
@@ -280,16 +500,61 @@ async def get_job_report():
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;color:#1f2937;background:#f6f7f9}}
 .wrap{{max-width:1400px;margin:auto}}h1{{font-size:24px;margin:0 0 8px}}.meta{{color:#6b7280;margin-bottom:16px}}
 input{{width:320px;max-width:100%;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;margin-bottom:14px}}
-.table-wrap{{overflow:auto;background:white;border:1px solid #e5e7eb;border-radius:10px}}
-table{{width:100%;border-collapse:collapse;white-space:nowrap}}th,td{{padding:10px 12px;border-bottom:1px solid #eee;text-align:left}}
+.table-wrap{{overflow-x:hidden;background:white;border:1px solid #e5e7eb;border-radius:10px}}
+table{{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14px}}
+th,td{{padding:9px 8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere;line-height:1.4}}
 th{{position:sticky;top:0;background:#f9fafb}}tr:hover{{background:#f9fafb}}.score{{font-weight:700}}
+.col-time{{width:12%}}.col-platform{{width:6%}}.col-company{{width:18%}}.col-title{{width:22%}}
+.col-score{{width:5%}}.col-greeting{{width:11%}}.col-salary{{width:9%}}.col-plan{{width:8%}}.col-result{{width:9%}}
+@media (max-width:900px){{body{{margin:10px}}table{{font-size:12px}}th,td{{padding:7px 4px}}.wrap{{min-width:0}}}}
 </style></head><body><div class="wrap"><h1>岗位处理记录</h1>
 <div class="meta">共 {len(rows)} 条记录；新版本开始记录公司名称，旧记录显示“未记录”。</div>
 <input id="filter" placeholder="搜索公司、岗位、结果……">
-<div class="table-wrap"><table><thead><tr><th>时间</th><th>平台</th><th>公司</th><th>岗位</th><th>薪资</th><th>分数</th><th>预计动作</th><th>结果</th></tr></thead>
+<div class="table-wrap"><table><colgroup><col class="col-time"><col class="col-platform"><col class="col-company"><col class="col-title"><col class="col-score"><col class="col-greeting"><col class="col-salary"><col class="col-plan"><col class="col-result"></colgroup><thead><tr><th>时间</th><th>平台</th><th>公司</th><th>岗位</th><th>分数</th><th>打招呼状态</th><th>薪资</th><th>预计动作</th><th>结果</th></tr></thead>
 <tbody id="rows">{table_rows}</tbody></table></div></div>
 <script>document.getElementById('filter').addEventListener('input',function(){{const q=this.value.toLowerCase();document.querySelectorAll('#rows tr').forEach(r=>r.hidden=!r.innerText.toLowerCase().includes(q));}});</script>
 </body></html>'''
+    return HTMLResponse(page)
+
+
+@app.get('/job-history', response_class=HTMLResponse, summary='查看七天岗位去重记录')
+async def get_job_history():
+    rows = build_job_history_rows()
+    table_rows = ''.join(
+        '<tr>'
+        f'<td>{html.escape((row["loggedAt"] or "未记录").replace("T", " "))}</td>'
+        f'<td>{html.escape(str(row["company"]))}</td>'
+        f'<td>{html.escape(str(row["title"]))}</td>'
+        f'<td class="score">{html.escape(str(row["score"] if row["score"] is not None else "-"))}</td>'
+        f'<td>{html.escape(str(row.get("greetingStatus") or "未打招呼"))}</td>'
+        f'<td>{html.escape(str(row["remaining"]))}</td>'
+        '</tr>'
+        for row in rows
+    ) or '<tr><td colspan="6" class="empty">当前没有七天去重记录</td></tr>'
+    page = f'''<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>七天去重记录</title><style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;color:#1f2937;background:#f6f7f9}}
+.wrap{{max-width:1400px;margin:auto}}h1{{font-size:24px;margin:0 0 8px}}.meta{{color:#6b7280;margin-bottom:16px}}
+.head{{display:flex;align-items:center;justify-content:space-between;gap:16px}}
+button{{border:0;border-radius:8px;padding:10px 16px;background:#b42318;color:white;font-weight:700;cursor:pointer}}button:disabled{{opacity:.55;cursor:wait}}
+.table-wrap{{overflow-x:hidden;background:white;border:1px solid #e5e7eb;border-radius:10px}}
+table{{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14px}}
+th,td{{padding:10px 9px;border-bottom:1px solid #eee;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere;line-height:1.4}}
+th{{position:sticky;top:0;background:#f9fafb}}tr:hover{{background:#f9fafb}}.score{{font-weight:700}}.empty{{text-align:center;color:#6b7280;padding:24px}}
+.time{{width:15%}}.company{{width:24%}}.title{{width:27%}}.score-col{{width:7%}}.greeting{{width:15%}}.remaining{{width:12%}}
+@media (max-width:900px){{body{{margin:10px}}table{{font-size:12px}}th,td{{padding:7px 4px}}}}
+</style></head><body><div class="wrap">
+<div class="head"><div><h1>七天去重记录</h1><div class="meta">共 {len(rows)} 条；清空后 Boss 页面会在几秒内同步。</div></div><button id="clear-history">一键清空</button></div>
+<div class="table-wrap"><table><colgroup><col class="time"><col class="company"><col class="title"><col class="score-col"><col class="greeting"><col class="remaining"></colgroup><thead><tr><th>处理时间</th><th>公司</th><th>岗位</th><th>分数</th><th>打招呼状态</th><th>剩余保护时间</th></tr></thead><tbody>{table_rows}</tbody></table></div>
+</div><script>
+document.getElementById('clear-history').addEventListener('click',async function(){{
+  if(!confirm('确定清空全部七天去重记录吗？清空后已处理岗位可能会被再次检查或联系。'))return;
+  this.disabled=true;this.textContent='正在清空…';
+  try{{const response=await fetch('/api/job-history/clear',{{method:'POST'}});if(!response.ok)throw new Error('请求失败');location.reload();}}
+  catch(error){{alert('清空失败，请确认后台仍在运行');this.disabled=false;this.textContent='一键清空';}}
+}});
+</script></body></html>'''
     return HTMLResponse(page)
 
 
@@ -299,13 +564,20 @@ def _active_strategy() -> dict | None:
     return strategy if strategy.get('confirmed') else None
 
 
+def _execution_mode_for_strategy(strategy: dict | None) -> str:
+    """界面取消独立运行环境后，由投递方式唯一决定是否允许真实操作。"""
+    return 'live' if (strategy or {}).get('deliveryMode') == 'auto' else 'test'
+
+
 def _effective_client_config() -> dict:
     client = copy.deepcopy(Config.get_client_config())
+    frontend = client.setdefault('frontend', {})
+    frontend['jobHistoryResetToken'] = str(_job_history_control().get('resetToken') or '')
     product_config = get_product_config(public=False)
     strategy = _active_strategy()
     if not strategy:
         # 新控制台尚未确认策略时保持只读安全状态，避免继承旧配置直接发送。
-        client.setdefault('frontend', {})['onlyGreet'] = True
+        frontend['onlyGreet'] = True
         client['productMode'] = product_config.get('mode', 'manual')
         client['deliveryMode'] = 'screen_only'
         client['executionMode'] = product_config.get('executionMode', 'test')
@@ -314,22 +586,19 @@ def _effective_client_config() -> dict:
     keywords = [str(item).strip() for item in strategy.get('searchKeywords', []) if str(item).strip()]
     if keywords:
         client['tags'] = keywords
-    frontend = client.setdefault('frontend', {})
     frontend['thread'] = max(0, min(100, _int_or_default(strategy.get('threshold'), frontend.get('thread', 80))))
     frontend['companyBlockKeywords'] = [
         str(item).strip() for item in strategy.get('companyBlockKeywords', []) if str(item).strip()
     ]
     frontend['maxJobsPerRun'] = 0
     frontend['maxJobsPerKeyword'] = strategy['jobsPerKeyword']
-    # 仅自动投递模式才进入现有的 Boss 新消息检测/平台简历发送流程。
-    # “只筛选”不会由脚本自动联系候选岗位。
-    execution_mode = product_config.get('executionMode', 'test')
-    frontend['onlyGreet'] = strategy.get('deliveryMode') != 'auto' or execution_mode != 'live'
+    # 产品只负责筛选和首次打招呼，不处理招聘者回复，也不自动发送简历。
+    execution_mode = _execution_mode_for_strategy(strategy)
+    frontend['onlyGreet'] = True
     client['productMode'] = product_config.get('mode', 'manual')
     client['deliveryMode'] = strategy.get('deliveryMode', 'screen_only')
     client['executionMode'] = execution_mode
     client['platforms'] = copy.deepcopy(product_config.get('platforms', {}))
-    client['resumeDelivery'] = 'platform_resume'
     client['resumeId'] = strategy.get('resumeId')
     return client
 
@@ -687,10 +956,13 @@ async def api_dashboard():
     return {
         'scanned': len(today_decisions),
         'recommended': sum(1 for item in today_decisions if int(item.get('score') or 0) >= threshold),
-        'greeted': sum(1 for item in today_actions if item.get('action') in {'greet_api_succeeded', 'zhaopin_greeting_sent'}),
+        'greeted': sum(1 for item in today_actions if item.get('action') in {'greet_api_succeeded', 'zhaopin_greeting_sent', 'zhaopin_application_sent', 'job51_application_sent'}),
         'blocked': sum(1 for item in today_actions if item.get('action') == 'job_company_blocked'),
         'review': sum(1 for item in today_actions if item.get('action') == 'job_requires_review'),
-        'failed': sum(1 for item in today_actions if item.get('action') in {'greet_api_failed', 'greet_failed', 'greet_timeout', 'zhaopin_greeting_failed'}),
+        'failed': sum(1 for item in today_actions if item.get('action') in {
+            'greet_api_failed', 'greet_failed', 'greet_timeout',
+            'zhaopin_greeting_failed', 'job51_application_failed',
+        }),
     }
 
 
@@ -704,11 +976,12 @@ async def api_execution_plan(payload: dict = Body(...)):
     score = _int_or_default(decision.get('score'), 0)
     threshold = _int_or_default(strategy.get('threshold'), 80)
     delivery_mode = strategy.get('deliveryMode', 'screen_only')
-    execution_mode = product_config.get('executionMode', 'test')
+    execution_mode = _execution_mode_for_strategy(strategy)
     confirmed_by_user = payload.get('confirmedByUser') is True
     company = _clean_company(job.get('company'))
     title = str(job.get('title') or '').strip()
-    contact_attempt_state = _zhaopin_contact_attempt_state(company, title) if platform == 'zhaopin' else 'none'
+    contact_state_platform = 'job51' if platform == 'job51_campus' else platform
+    contact_attempt_state = _platform_contact_attempt_state(contact_state_platform, company, title) if contact_state_platform in {'zhaopin', 'job51'} else 'none'
     contact_attempted = contact_attempt_state == 'attempted'
     contact_retry_safe = contact_attempt_state == 'retry_safe'
     planned_actions = []
@@ -718,17 +991,19 @@ async def api_execution_plan(payload: dict = Body(...)):
     elif not company:
         planned_actions.append({'type': 'manual_review', 'label': '公司未知，人工审核'})
     elif contact_attempted:
-        planned_actions.append({'type': 'skip_duplicate', 'label': '曾点击过真实沟通，跳过'})
+        planned_actions.append({
+            'type': 'skip_duplicate',
+            'label': '曾点击过真实投递，跳过' if platform == 'job51' else '曾点击过真实沟通，跳过',
+        })
     elif delivery_mode == 'screen_only':
         planned_actions.append({'type': 'record_only', 'label': '仅记录推荐结果'})
     elif platform == 'zhaopin' and delivery_mode == 'auto':
-        planned_actions.append({'type': 'auto_greet', 'label': '自动发送招呼'})
+        planned_actions.append({'type': 'apply_and_contact', 'label': '点击立即投递（默认招呼语 + 智联简历）'})
+    elif platform in {'job51', 'job51_campus'} and delivery_mode == 'auto':
+        planned_actions.append({'type': 'apply_job', 'label': '点击投递（前程无忧平台简历）' if platform == 'job51' else '点击投递（校招平台）'})
     elif platform == 'boss':
-        planned_actions.extend([
-            {'type': 'send_greeting', 'label': '发送招呼语'},
-            {'type': 'send_resume', 'label': '发送平台简历'},
-        ])
-    elif platform in {'zhaopin', 'job51'}:
+        planned_actions.append({'type': 'send_greeting', 'label': '发送招呼语'})
+    elif platform in {'zhaopin', 'job51', 'job51_campus'}:
         planned_actions.extend([
             {'type': 'apply_job', 'label': '申请职位'},
             {'type': 'select_resume', 'label': '选择平台简历'},
@@ -737,12 +1012,13 @@ async def api_execution_plan(payload: dict = Body(...)):
         planned_actions.append({'type': 'manual_review', 'label': '未知平台，人工审核'})
 
     platform_info = next((item for item in list_platforms() if item['id'] == platform), None)
-    platform_enabled = bool(product_config.get('platforms', {}).get(platform, {}).get('enabled'))
+    if platform == 'job51_campus':
+        platform_info = next((item for item in list_platforms() if item['id'] == 'job51'), None)
+    platform_enabled = bool(product_config.get('platforms', {}).get('job51' if platform == 'job51_campus' else platform, {}).get('enabled'))
     requires_user_confirmation = False
     delivery_allows_execute = delivery_mode == 'auto'
     allow_execute = bool(
-        execution_mode == 'live'
-        and delivery_allows_execute
+        delivery_allows_execute
         and platform_info
         and platform_info.get('implemented')
         and platform_enabled
@@ -750,9 +1026,7 @@ async def api_execution_plan(payload: dict = Body(...)):
         and company
         and score >= threshold
     )
-    if execution_mode == 'test':
-        blocked_by = 'test_mode'
-    elif not platform_info or not platform_info.get('implemented'):
+    if not platform_info or not platform_info.get('implemented'):
         blocked_by = 'adapter_not_live'
     elif not platform_enabled:
         blocked_by = 'platform_disabled'
@@ -804,6 +1078,8 @@ async def get_client_config():
 @app.post("/get-job-score", summary="获取职位匹配度")
 async def get_job_score(job: Any = Body(..., description="职位信息")):
     raw_job, company, salary, platform = _normalize_job_payload(job)
+    company_type = str(job.get('companyType') or '').strip() if isinstance(job, dict) else ''
+    recruiter_company = _clean_company(job.get('recruiterCompany')) if isinstance(job, dict) else ''
     product_config = get_product_config(public=False)
     strategy = product_config.get('strategy', {}) if product_config.get('strategy', {}).get('confirmed') else None
     scoring = None
@@ -889,9 +1165,11 @@ async def get_job_score(job: Any = Body(..., description="职位信息")):
 
     result['decisionId'] = uuid.uuid4().hex
     result['company'] = company
+    result['company_type'] = company_type
+    result['recruiter_company'] = recruiter_company
     result['salary'] = salary
     delivery_mode = strategy.get('deliveryMode', 'screen_only') if strategy else 'screen_only'
-    execution_mode = product_config.get('executionMode', 'test')
+    execution_mode = _execution_mode_for_strategy(strategy)
     result['autoSend'] = (
         execution_mode == 'live'
         and delivery_mode == 'auto'

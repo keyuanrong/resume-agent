@@ -1,20 +1,26 @@
 // ==UserScript==
 // @name         goodJobs · 智联招聘/前程无忧
 // @namespace    https://github.com/keyuanrong/resume-agent
-// @version      2026-09-30
-// @description  与 Boss 相同的控制面板；支持筛选不发送和智联自动沟通
+// @version      2026-10-05.3
+// @description  与 Boss 相同的控制面板；支持筛选不发送和智联达到阈值后投递在线简历并建立沟通
 // @match        https://www.zhaopin.com/*
 // @match        https://sou.zhaopin.com/*
 // @match        https://jobs.zhaopin.com/*
 // @match        https://www.51job.com/*
 // @match        https://we.51job.com/*
 // @match        https://jobs.51job.com/*
+// @match        https://51job.com/*
+// @match        https://*.51job.com/*
+// @match        https://yingjiesheng.com/*
+// @match        https://*.yingjiesheng.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_openInTab
+// @grant        unsafeWindow
 // @connect      127.0.0.1
+// @noframes
 // ==/UserScript==
 
 (function () {
@@ -46,18 +52,27 @@
         module.exports = {keywordRemaining, recordKeywordView, waitForPlatformGreeting};
         return;
     }
+    if (window.top !== window.self) return;
 
     const SERVER = 'http://127.0.0.1:8000';
+    const SCRIPT_VERSION = '2026-10-05.3';
     const DETAIL_REQUEST_KEY = 'resumeAgent:platformTest:detailRequest';
     const DETAIL_RESPONSE_KEY = 'resumeAgent:platformTest:detailResponse';
+    const APPLICATION_REQUEST_KEY = 'resumeAgent:platformTest:applicationRequest';
+    const APPLICATION_RESPONSE_KEY = 'resumeAgent:platformTest:applicationResponse';
+    const CAMPUS_REQUEST_KEY = 'resumeAgent:platformTest:campusApplicationRequest';
     const RUN_STATE_KEY = 'resumeAgent:platformTest:runState';
     const LOG_KEY_PREFIX = 'resumeAgent:platformTest:logs:';
     const DEFAULT_MAX_JOBS_PER_KEYWORD = 20;
     const MANUAL_FILTER_WAIT_MS = 10000;
     const MAX_LOG_LINES = 250;
     const INSTANCE_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const platform = location.hostname.includes('zhaopin.com') ? 'zhaopin' : 'job51';
+    const isCampusHost = /^(xy|campus|young)\.51job\.com$/i.test(location.hostname)
+        || /(^|\.)yingjiesheng\.com$/i.test(location.hostname);
+    const platform = location.hostname.includes('zhaopin.com') ? 'zhaopin' : isCampusHost ? 'job51_campus' : 'job51';
     const LIVE_ATTEMPTS_KEY = `resumeAgent:liveAttempts:${platform}`;
+    const LIVE_ATTEMPTS_CONTROL_KEY = `resumeAgent:liveAttemptsControl:${platform}`;
+    const LIVE_ATTEMPT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const invalidCompanies = new Set(['', '公司', '公司信息', '企业', '企业信息', '查看公司', '所属公司']);
 
     const definitions = {
@@ -83,15 +98,29 @@
             title: ['.jname', '[class*="jobname"]', '[class*="job-name"]'],
             company: ['.cname', 'a.comp', '[class*="company-name"]', '[class*="companyName"]'],
             salary: ['.sal', '[class*="salary"]'],
-            link: ['a[href*="jobs.51job.com/"]:not([href*="/all/co"])', '.jname a'],
+            link: ['a[href*="jobs.51job.com/"][href*=".html"]:not([href*="/all/co"])', '.jname a[href*=".html"]'],
             searchInputs: ['input[placeholder*="职位"]', 'input[placeholder*="关键字"]', 'input[placeholder*="搜索"]', '#keywordInput'],
             searchButtons: ['button[class*="search"]', '[class*="search-btn"]', '.search_button'],
             loginMarkers: ['[class*="user-name"]', '[class*="avatar"]', 'a[href*="resume"]'],
             loggedOutMarkers: ['a[href*="login"]', '[class*="login"]'],
-            detailTitle: ['h1', '.cn h1', '.jname', '[class*="job-name"]'],
+            detailTitle: ['.tHeader .cn h1', '.cn h1', '.job-detail-header .jname', '[class*="job-name"]', '[class*="jobName"]'],
             detailCompany: ['.cname', '.com_name', '.cn p.cname', 'a[href*=".51job.com"][class*="company"]'],
             detailSalary: ['.sal', '.cn strong', '[class*="salary"]'],
             detailBody: ['.job_msg', '.bmsg.job_msg', '[class*="job-detail"]', '[class*="description"]'],
+        },
+        job51_campus: {
+            name: '应届生/校招平台',
+            cards: ['.job-item', '.joblist-item', '[class*="job-item"]', '[class*="job-card"]', '[class*="joblist"] li'],
+            title: ['.job-name', '.jname', '[class*="job-name"]', '[class*="jobName"]', 'h1', 'h2', 'h3'],
+            company: ['.company-name', '.cname', '[class*="company-name"]', '[class*="companyName"]'],
+            salary: ['.salary', '.sal', '[class*="salary"]'],
+            link: ['a[href*="job"]', 'a[href*="position"]', 'a[href*="detail"]'],
+            searchInputs: [], searchButtons: [], loginMarkers: ['[class*="avatar"]', '[class*="user"]'],
+            loggedOutMarkers: ['a[href*="login"]', '[class*="login"]'],
+            detailTitle: ['h1', '.job-name', '[class*="job-name"]'],
+            detailCompany: ['.company-name', '.cname', '[class*="company-name"]'],
+            detailSalary: ['.salary', '.sal', '[class*="salary"]'],
+            detailBody: ['.job-detail', '.job-description', '[class*="description"]', 'main'],
         },
     };
     const definition = definitions[platform];
@@ -121,11 +150,26 @@
         return element?.href || element?.closest('a')?.href || '';
     };
     const structuredJob = () => {
+        const findJobPosting = value => {
+            if (!value || typeof value !== 'object') return null;
+            if (value['@type'] === 'JobPosting' || (Array.isArray(value['@type']) && value['@type'].includes('JobPosting'))) return value;
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    const found = findJobPosting(item);
+                    if (found) return found;
+                }
+                return null;
+            }
+            for (const key of ['@graph', 'mainEntity', 'itemListElement']) {
+                const found = findJobPosting(value[key]);
+                if (found) return found;
+            }
+            return null;
+        };
         for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
             try {
                 const parsed = JSON.parse(script.textContent || '{}');
-                const values = Array.isArray(parsed) ? parsed : [parsed];
-                const job = values.find(item => item?.['@type'] === 'JobPosting') || values[0];
+                const job = findJobPosting(parsed);
                 if (job) return job;
             } catch (error) {
                 // 非标准 JSON-LD 继续使用 DOM 兜底。
@@ -133,7 +177,33 @@
         }
         return {};
     };
+    const htmlToText = value => {
+        const container = document.createElement('div');
+        container.innerHTML = String(value || '');
+        return clean(container.innerText || container.textContent);
+    };
     const detailBodyText = () => {
+        if (platform === 'job51') {
+            const structuredDescription = htmlToText(structuredJob()?.description);
+            const candidates = [];
+            if (structuredDescription) candidates.push({text: structuredDescription, priority: 6});
+            for (const [selectorIndex, selector] of definition.detailBody.entries()) {
+                for (const element of document.querySelectorAll(selector)) {
+                    const text = clean(element.innerText || element.textContent);
+                    if (text.length < 40 || text.length > 30000) continue;
+                    if (/热门城市.*友情链接.*关于我们/.test(text)) continue;
+                    candidates.push({text, priority: definition.detailBody.length - selectorIndex});
+                }
+            }
+            candidates.sort((left, right) => {
+                const leftPreferred = /职位描述|岗位职责|任职要求|工作内容|职位要求/.test(left.text);
+                const rightPreferred = /职位描述|岗位职责|任职要求|工作内容|职位要求/.test(right.text);
+                return Number(rightPreferred) - Number(leftPreferred)
+                    || right.priority - left.priority
+                    || right.text.length - left.text.length;
+            });
+            return candidates[0]?.text || '';
+        }
         if (platform !== 'zhaopin') return firstText(document, definition.detailBody);
         const cards = Array.from(document.querySelectorAll('.job-detail-card'));
         const candidates = [];
@@ -152,11 +222,41 @@
         const company = clean(value).replace(/^(公司名称|所属公司)[：:]?\s*/, '');
         return invalidCompanies.has(company) ? '' : company;
     };
+    const validJobTitle = value => {
+        const title = clean(value);
+        if (!title || title.length > 160) return '';
+        if (/^(APP下载|下载APP|职位搜索|招聘信息|前程无忧|招聘网|找工作|找不到该页)$/i.test(title)) return '';
+        return title;
+    };
+    const validSalaryText = value => {
+        const salary = clean(value);
+        if (!salary) return '';
+        if (/^(面议|薪资面议|薪资保密)$/i.test(salary)) return salary;
+        const matched = salary.match(
+            /\d+(?:\.\d+)?\s*(?:元|[Kk]|千|万)?\s*(?:-|–|—|~|至)\s*\d+(?:\.\d+)?\s*(?:元|[Kk]|千|万)(?:\s*\/\s*(?:天|月|年)|\s*[·x×]\s*\d+\s*薪)?/,
+        );
+        return matched?.[0] || '';
+    };
+    const firstSalary = (root, selectors) => {
+        for (const selector of selectors) {
+            for (const element of root.querySelectorAll(selector)) {
+                const salary = validSalaryText(element.innerText || element.textContent);
+                if (salary) return salary;
+            }
+        }
+        return '';
+    };
     const normalizeIdentity = value => clean(value).toLowerCase().replace(/[\s（）()【】\[\]·•…⋯，,。.!！?？/\\_-]/g, '');
     const liveAttemptKey = job => `${normalizeIdentity(job?.company)}|${normalizeIdentity(job?.title)}`;
+    const recentLiveAttempts = attempts => (Array.isArray(attempts) ? attempts : []).filter(item => {
+        const clickedAt = Date.parse(item?.clickedAt || '');
+        return Number.isFinite(clickedAt) && Date.now() - clickedAt < LIVE_ATTEMPT_TTL_MS;
+    });
     const hasLiveAttempt = async job => {
         const attempts = await gmGet(LIVE_ATTEMPTS_KEY, []);
-        return Array.isArray(attempts) && attempts.some(item => item?.key === liveAttemptKey(job));
+        const recent = recentLiveAttempts(attempts);
+        if (recent.length !== (Array.isArray(attempts) ? attempts.length : 0)) await gmSet(LIVE_ATTEMPTS_KEY, recent);
+        return recent.some(item => item?.key === liveAttemptKey(job));
     };
     const rememberLiveAttempt = async (job, decision, actionLabel) => {
         const attempts = await gmGet(LIVE_ATTEMPTS_KEY, []);
@@ -168,7 +268,7 @@
             actionLabel,
             clickedAt: new Date().toISOString(),
         };
-        const next = [record, ...(Array.isArray(attempts) ? attempts : []).filter(item => item?.key !== record.key)].slice(0, 500);
+        const next = [record, ...recentLiveAttempts(attempts).filter(item => item?.key !== record.key)].slice(0, 500);
         await gmSet(LIVE_ATTEMPTS_KEY, next);
     };
     const forgetLiveAttempt = async job => {
@@ -195,6 +295,16 @@
             onerror: () => reject(new Error(`无法连接本机接口 ${path}`)),
         });
     });
+    const syncLiveAttemptReset = async () => {
+        const control = await requestLocal('/api/job-history/control');
+        const resetToken = clean(control?.resetToken);
+        const knownToken = clean(await gmGet(LIVE_ATTEMPTS_CONTROL_KEY, ''));
+        if (resetToken && resetToken !== knownToken) {
+            await gmSet(LIVE_ATTEMPTS_KEY, []);
+            await gmSet(LIVE_ATTEMPTS_CONTROL_KEY, resetToken);
+            await addLog('已从控制台同步清空七天去重记录');
+        }
+    };
     const logAction = data => requestLocal('/log-action', 'POST', {platform, scene: 'platform_full_test', ...data}).catch(() => null);
 
     const detailMatchesRequest = request => {
@@ -221,15 +331,17 @@
     const extractDetailPage = request => {
         const structured = structuredJob();
         const structuredCompany = structured?.hiringOrganization?.name || structured?.company?.name;
-        const body = detailBodyText() || clean(structured?.description);
+        const body = detailBodyText() || htmlToText(structured?.description);
+        const extractedTitle = validJobTitle(clean(structured?.title))
+            || validJobTitle(firstText(document, definition.detailTitle));
         return {
             requestId: request.id,
             platform,
             externalId: request.externalId,
             url: location.href,
-            title: firstText(document, definition.detailTitle) || clean(structured?.title),
+            title: extractedTitle || request.title || '',
             company: normalizeCompany(firstText(document, definition.detailCompany) || structuredCompany),
-            salary: firstText(document, definition.detailSalary) || clean(structured?.baseSalary?.value),
+            salary: firstSalary(document, definition.detailSalary) || validSalaryText(structured?.baseSalary?.value),
             detail: body,
             detailSource: body ? 'detail_page' : 'missing',
             detailLength: body.length,
@@ -340,32 +452,191 @@
         const input = firstElement(document, definition.searchInputs, true);
         if (!input) throw new Error('没有找到搜索输入框，请进入岗位搜索页');
         setInputValue(input, keyword);
-        const button = firstElement(document, definition.searchButtons, true) || findTextButton('搜索');
-        if (!button) throw new Error('没有找到搜索按钮');
-        const next = {...state, phase: 'collect', currentKeyword: keyword, searchStartedAt: Date.now()};
+        let next = {...state, phase: 'collect', currentKeyword: keyword, searchStartedAt: Date.now(), pendingNavigation: false};
         await saveState(next);
         await addLog(`本轮搜索关键词：${keyword}`);
+        if (platform === 'job51') {
+            // 前程无忧搜索按钮的站内跳转不会稳定地让用户脚本继续执行。
+            // 直接保留城市、薪资等现有查询参数，只替换关键词并进行完整页面导航；
+            // 新页面会从已保存的 collect 状态自动续跑。
+            const currentUrl = new URL(location.href);
+            const target = new URL('https://we.51job.com/pc/search');
+            // 只继承搜索页已有的城市、薪资等筛选参数，不能继承 www/裸域名，
+            // 否则 51job.com/pc/search 会被重定向到 /in/missing.php。
+            if (currentUrl.pathname === '/pc/search') {
+                for (const [name, value] of currentUrl.searchParams.entries()) {
+                    target.searchParams.append(name, value);
+                }
+            }
+            target.searchParams.set('keyword', keyword);
+            if (!target.searchParams.has('searchType')) target.searchParams.set('searchType', '2');
+            const currentKeyword = clean(currentUrl.searchParams.get('keyword'));
+            if (normalizeIdentity(currentKeyword) === normalizeIdentity(keyword)) {
+                await addLog('当前页面已经是目标搜索词，直接扫描岗位列表');
+                await sleep(800);
+                return next;
+            }
+            next = {...next, pendingNavigation: true, navigationTarget: target.toString()};
+            await saveState(next);
+            await addLog('正在打开下一搜索结果页，页面加载后将自动继续');
+            location.assign(target.toString());
+            // 当前文档仍可能短暂保留旧页面 DOM，必须立刻交给新页面实例接管，
+            // 不能继续把首页推荐或上一关键词卡片当作新搜索结果。
+            throw new Error('运行已由新页面接管');
+        }
+        const button = firstElement(document, definition.searchButtons, true) || findTextButton('搜索');
+        if (!button) throw new Error('没有找到搜索按钮');
         button.click();
         await sleep(3500);
         return next;
     };
+    const canonicalJobUrl = value => {
+        if (!clean(value)) return '';
+        try {
+            const url = new URL(value, location.href);
+            return `${url.origin}${url.pathname}`.replace(/\/$/, '');
+        } catch (error) {
+            return clean(value).split(/[?#]/)[0].replace(/\/$/, '');
+        }
+    };
+    const is51JobDetailUrl = value => {
+        const url = canonicalJobUrl(value);
+        return /^https:\/\/jobs\.51job\.com\/[^?#]+\/\d+\.html$/i.test(url) ? url : '';
+    };
+    const is51JobCampusUrl = value => {
+        try {
+            const hostname = new URL(value, location.href).hostname.toLowerCase();
+            return hostname === 'xy.51job.com'
+                || hostname === 'campus.51job.com'
+                || hostname === 'young.51job.com'
+                || hostname === 'yingjiesheng.com'
+                || hostname.endsWith('.yingjiesheng.com');
+        } catch (error) {
+            return false;
+        }
+    };
+    const build51JobSearchApiUrl = (keyword, limit) => {
+        const resourceEntries = Array.from(performance.getEntriesByType?.('resource') || []).reverse();
+        const observed = resourceEntries.find(entry => {
+            try { return new URL(entry.name).pathname === '/api/job/search-pc'; }
+            catch (error) { return false; }
+        });
+        const url = observed
+            ? new URL(observed.name)
+            : new URL('https://we.51job.com/api/job/search-pc');
+        const pageUrl = new URL(location.href);
+        const filterNames = [
+            'jobArea', 'jobArea2', 'landmark', 'metro', 'salary', 'workYear',
+            'degree', 'companyType', 'companySize', 'jobType', 'issueDate',
+            'industry', 'function', 'sortType',
+        ];
+        for (const name of filterNames) {
+            if (pageUrl.searchParams.has(name)) url.searchParams.set(name, pageUrl.searchParams.get(name) || '');
+            else if (!url.searchParams.has(name)) url.searchParams.set(name, name === 'jobArea' ? '000000' : '');
+        }
+        url.searchParams.set('api_key', '51job');
+        url.searchParams.set('timestamp', String(Date.now()));
+        url.searchParams.set('keyword', keyword);
+        url.searchParams.set('searchType', '2');
+        url.searchParams.set('pageNum', '1');
+        url.searchParams.set('pageSize', String(Math.max(1, Math.min(Number(limit) || 20, 50))));
+        url.searchParams.set('source', '1');
+        url.searchParams.set('scene', '7');
+        return url.toString();
+    };
+    const fetch51JobSearchApi = async (keyword, limit) => {
+        if (platform !== 'job51') return [];
+        const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+        const apiUrl = build51JobSearchApiUrl(keyword, limit);
+        const response = await pageWindow.fetch(apiUrl, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {Accept: 'application/json'},
+        });
+        const text = await response.text();
+        if (!response.ok) throw new Error(`搜索接口返回 HTTP ${response.status}`);
+        if (text.trim().startsWith('<')) throw new Error('搜索接口触发了前程无忧安全验证');
+        let data;
+        try { data = JSON.parse(text); }
+        catch (error) { throw new Error('搜索接口没有返回有效 JSON'); }
+        if (data?.status !== '1' && data?.status !== 1) {
+            throw new Error(`搜索接口返回失败：${clean(data?.message) || 'unknown'}`);
+        }
+        const items = Array.isArray(data?.resultbody?.job?.items) ? data.resultbody.job.items : [];
+        return items.slice(0, limit).map((item, index) => {
+            const externalId = String(item?.jobId || `job51-api-${index}`);
+            const detail = htmlToText(item?.jobDescribe);
+            const suppliedUrl = canonicalJobUrl(
+                item?.jobHref || item?.jobUrl || item?.jobDetailUrl || item?.detailUrl || item?.href
+            );
+            const usableJobUrl = /^https:\/\/jobs\.51job\.com\/[^?#]+\/\d+\.html$/i.test(suppliedUrl)
+                ? suppliedUrl
+                : '';
+            return {
+                platform,
+                listIndex: index,
+                externalId,
+                // /x/<jobId>.html 会被前程无忧跳到 missing.php，不能作为岗位地址兜底。
+                url: usableJobUrl,
+                title: clean(item?.jobName),
+                company: normalizeCompany(item?.fullCompanyName || item?.companyName),
+                salary: validSalaryText(item?.provideSalaryString),
+                detail,
+                detailSource: detail.length >= 40 ? 'search_api' : 'search_api_summary',
+                detailLength: detail.length,
+            };
+        }).filter(job => job.title);
+    };
     const fallbackCardsFromJobLinks = () => {
         const selectors = platform === 'zhaopin'
             ? 'a[href*="jobdetail"],a[href*="jobs.zhaopin.com"],a[href*="/job/"]'
-            : 'a[href*="jobs.51job.com/"]:not([href*="/all/co"])';
+            : 'a[href*="jobs.51job.com/"][href*=".html"]:not([href*="/all/co"])';
         const links = Array.from(document.querySelectorAll(selectors)).filter(visible);
         const cards = [];
         const seenHrefs = new Set();
         for (const link of links) {
-            const href = link.href || '';
+            const href = canonicalJobUrl(link.href || '');
             if (!href || seenHrefs.has(href)) continue;
+            if (platform === 'job51' && !/\/\d+\.html$/i.test(new URL(href).pathname)) continue;
             seenHrefs.add(href);
-            // 链接本身就是可靠的最小岗位单元；公司等信息可由详情页补齐。
-            cards.push(link);
+            if (platform === 'job51') {
+                const ancestors = [link, link.parentElement, link.parentElement?.parentElement,
+                    link.parentElement?.parentElement?.parentElement, link.parentElement?.parentElement?.parentElement?.parentElement]
+                    .filter(Boolean);
+                const completeCard = ancestors.find(element => (
+                    firstText(element, definition.title) && firstText(element, definition.company)
+                ));
+                cards.push(completeCard || link);
+            } else {
+                // 链接本身就是可靠的最小岗位单元；公司等信息可由详情页补齐。
+                cards.push(link);
+            }
         }
         return cards;
     };
+    const dedupeJobCards = cards => {
+        const selected = new Map();
+        for (const card of cards) {
+            const url = canonicalJobUrl(firstHref(card, definition.link));
+            const title = firstText(card, definition.title)
+                || (card.matches?.('a') ? clean(card.innerText || card.textContent) : '');
+            const company = normalizeCompany(firstText(card, definition.company));
+            const key = url || `${normalizeIdentity(title)}|${normalizeIdentity(company)}`;
+            if (!key) continue;
+            const existing = selected.get(key);
+            const quality = (title ? 2 : 0) + (company ? 4 : 0) + Math.min(2, clean(card.innerText || card.textContent).length / 200);
+            if (!existing || quality > existing.quality) selected.set(key, {card, quality});
+        }
+        return Array.from(selected.values(), item => item.card);
+    };
     function getCards() {
+        if (platform === 'job51') {
+            // 前程无忧新版主搜索结果是无链接的 .joblist-item；带 jobs.51job.com
+            // 链接的是右侧推荐区，不能作为主列表，否则会把公共区域误判为职位详情。
+            return Array.from(document.querySelectorAll('.joblist-item')).filter(card => (
+                visible(card) && firstText(card, definition.title)
+            ));
+        }
         let best = [];
         for (const selector of definition.cards) {
             const cards = Array.from(document.querySelectorAll(selector)).filter(card => (
@@ -374,7 +645,8 @@
             if (cards.length > best.length) best = cards;
         }
         const linkCards = fallbackCardsFromJobLinks();
-        return linkCards.length > best.length ? linkCards : best;
+        const candidates = best.length ? best : linkCards;
+        return dedupeJobCards(candidates);
     }
     const elementSignature = element => {
         if (!element) return '';
@@ -384,7 +656,7 @@
     const collectListDiagnostics = () => {
         const linkSelector = platform === 'zhaopin'
             ? 'a[href*="jobdetail"],a[href*="jobs.zhaopin.com"],a[href*="/job/"]'
-            : 'a[href*="jobs.51job.com/"]';
+            : 'a[href*="jobs.51job.com/"][href*=".html"]:not([href*="/all/co"])';
         const links = Array.from(document.querySelectorAll(linkSelector)).filter(visible);
         return {
             path: location.pathname,
@@ -456,7 +728,7 @@
     const pageDiagnostics = () => {
         const jobLinkSelector = platform === 'zhaopin'
             ? 'a[href*="jobdetail"],a[href*="jobs.zhaopin.com"],a[href*="/job/"]'
-            : 'a[href*="jobs.51job.com/"]';
+            : 'a[href*="jobs.51job.com/"][href*=".html"]:not([href*="/all/co"])';
         return `地址=${location.pathname}｜候选职位链接=${document.querySelectorAll(jobLinkSelector).length}｜页面标题=${clean(document.title)}`;
     };
     const loadCards = async targetCount => {
@@ -503,14 +775,66 @@
         await addLog('点击下一页后未识别到页面变化，结束当前搜索词');
         return false;
     };
-    const extractCard = (card, index) => {
-        const url = firstHref(card, definition.link);
-        const title = firstText(card, definition.title);
+    const capture51JobDetailUrl = async card => {
+        if (platform !== 'job51') return '';
+        // 只读 DOM 中已有的地址，不再点击岗位标题来拦截 window.open。
+        // 部分校招岗位点击标题会跳到前程无忧旗下的应届生平台，既破坏当前任务，
+        // 也无法继续使用主站的详情页解析与投递逻辑。
+        const candidates = [card, ...Array.from(card.querySelectorAll('*'))];
+        for (const element of candidates) {
+            for (const attribute of ['href', 'data-href', 'data-url', 'data-job-url', 'data-link']) {
+                const url = is51JobDetailUrl(element.getAttribute?.(attribute));
+                if (url) return url;
+            }
+        }
+        const html = String(card.outerHTML || '').replace(/\\\//g, '/');
+        const embedded = html.match(/https?:\/\/jobs\.51job\.com\/[^“”"'<>\s]+\/\d+\.html/i)?.[0];
+        return is51JobDetailUrl(embedded);
+    };
+    const findMatching51JobDetailUrl = (title, company) => {
+        if (platform !== 'job51') return '';
+        const titleIdentity = normalizeIdentity(title);
+        if (titleIdentity.length < 4) return '';
+        const companyIdentity = normalizeIdentity(company)
+            .replace(/(?:有限责任公司|股份有限公司|有限公司|集团公司|集团|公司)$/g, '');
+        const matches = [];
+        for (const link of document.querySelectorAll('a[href*="jobs.51job.com/"][href*=".html"]:not([href*="/all/co"])')) {
+            const url = canonicalJobUrl(link.href || '');
+            if (!/^https:\/\/jobs\.51job\.com\/[^?#]+\/\d+\.html$/i.test(url)) continue;
+            const textIdentity = normalizeIdentity(link.innerText || link.textContent);
+            if (!textIdentity.includes(titleIdentity)) continue;
+            matches.push({url, textIdentity});
+        }
+        if (matches.length === 1) return matches[0].url;
+        if (companyIdentity.length >= 4) {
+            const companyToken = companyIdentity.slice(0, Math.min(10, companyIdentity.length));
+            const companyMatches = matches.filter(item => item.textIdentity.includes(companyToken));
+            if (companyMatches.length === 1) return companyMatches[0].url;
+        }
+        return '';
+    };
+    const extractCard = async (card, index) => {
+        const title = firstText(card, definition.title)
+            || (card.matches?.('a') ? clean(card.innerText || card.textContent) : '');
         const company = normalizeCompany(firstText(card, definition.company));
-        const salary = firstText(card, definition.salary);
+        const salary = firstSalary(card, definition.salary)
+            || (platform === 'job51' ? validSalaryText(card.innerText || card.textContent) : '');
+        const directUrl = canonicalJobUrl(firstHref(card, definition.link));
+        const capturedUrl = directUrl || await capture51JobDetailUrl(card);
+        const externalCampusUrl = Array.from(card.querySelectorAll('a[href]'))
+            .map(link => link.href || link.getAttribute('href') || '')
+            .find(is51JobCampusUrl) || '';
+        // 主列表本身无链接时，允许和页面已有标准岗位链接按“岗位名 + 公司”精确对应。
+        // 不直接把右侧推荐区当列表，避免重新引入重复卡片和 APP 下载等公共内容。
+        const url = capturedUrl || findMatching51JobDetailUrl(title, company);
         let externalId = `${platform}-${index}`;
         try { externalId = new URL(url).pathname.split('/').filter(Boolean).pop() || externalId; } catch (error) {}
-        return {platform, externalId, url, title, company, salary, detail: clean(card.innerText || card.textContent), detailSource: 'job_card'};
+        return {
+            platform, externalId, url, title, company, salary,
+            detail: clean(card.innerText || card.textContent),
+            detailSource: externalCampusUrl ? 'external_campus_summary' : 'job_card',
+            externalCampusUrl,
+        };
     };
     const fetchInlineZhaopinDetail = async (cardJob, card) => {
         card.scrollIntoView({block: 'center'});
@@ -551,7 +875,7 @@
                         title: title || cardJob.title,
                         company: resolvedCompany,
                         clientCompany: isOutsourcedClient ? company.replace(/^客户公司[：:]\s*/, '') : '',
-                        salary: firstText(document, definition.detailSalary) || cardJob.salary,
+                        salary: firstSalary(document, definition.detailSalary) || cardJob.salary,
                         detail: body || cardJob.detail,
                         detailSource: 'inline_detail_panel',
                         detailLength: body.length,
@@ -576,7 +900,15 @@
             return fetchInlineZhaopinDetail(cardJob, card);
         }
         if (!cardJob.url) return cardJob;
-        const request = {id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, platform, externalId: cardJob.externalId, url: cardJob.url, createdAt: Date.now()};
+        const request = {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            platform,
+            externalId: cardJob.externalId,
+            url: cardJob.url,
+            title: cardJob.title,
+            company: cardJob.company,
+            createdAt: Date.now(),
+        };
         await gmDelete(DETAIL_RESPONSE_KEY);
         await gmSet(DETAIL_REQUEST_KEY, request);
         const detailTab = GM_openInTab(cardJob.url, {active: false, insert: true, setParent: true});
@@ -589,7 +921,8 @@
                     return {
                         ...cardJob,
                         ...response,
-                        title: response.title || cardJob.title,
+                        // 前程无忧详情页顶部存在“APP下载”等通用标题，卡片岗位名更可靠。
+                        title: platform === 'job51' ? cardJob.title : response.title || cardJob.title,
                         company: response.company || cardJob.company,
                         salary: response.salary || cardJob.salary,
                         detail: response.detail || cardJob.detail,
@@ -611,10 +944,9 @@
     const findZhaopinContactAction = () => {
         const selectors = [
             '.job-detail-summary__prechat button', '.job-detail-summary__prechat',
-            '.job-detail-chat__btn', '.job-detail-summary__apply button',
-            '.job-detail-summary__apply', '.job-apply-button button', '.job-apply-button',
+            '.job-detail-chat__btn', '.job-detail-summary button',
         ];
-        const pattern = /立即沟通|马上沟通|发起沟通|申请职位|立即申请|投递简历|立即投递/;
+        const pattern = /^(立即沟通|马上沟通|发起沟通|继续沟通|在线沟通|去沟通|立即投递|投递职位|申请职位|立即申请)$/;
         return visibleElements(selectors).find(element => pattern.test(clean(element.innerText || element.textContent)))
             || findActionByText(pattern);
     };
@@ -646,11 +978,9 @@
             return clean(firstText(greetingModal, ['.deliver-greeting-modal__title', '.deliver-greeting-modal__content-text'])
                 || greetingModal.innerText || '招呼已发送');
         }
-        const applySuccess = visibleElements(['.a-job-apply-success-message-panel'])[0];
-        if (applySuccess) return clean(applySuccess.innerText || '投递成功');
         const selectors = ['.a-toast__content', '.ivu-message-notice-content', '[class*="toast"]', '[class*="message"]'];
         return visibleElements(selectors).map(element => clean(element.innerText || element.textContent))
-            .find(text => /沟通成功|发送成功|招呼已发送|投递成功|投递完成|申请成功|已投递|已申请/.test(text)) || '';
+            .find(text => /沟通成功|发送成功|招呼已发送|投递成功|申请成功|已投递/.test(text)) || '';
     };
     const contactDiagnostics = (button, beforeUrl) => {
         const candidateSelectors = [
@@ -686,7 +1016,7 @@
             const successText = contactSuccessText();
             if (successText) return {type: 'success', detail: successText};
             const currentText = clean(button?.innerText || button?.textContent);
-            if (currentText !== beforeText && /已沟通|继续沟通|已投递|已申请|查看沟通/.test(currentText)) {
+            if (currentText !== beforeText && /已沟通|继续沟通|查看沟通|已投递|投递成功|申请成功/.test(currentText)) {
                 return {type: 'success', detail: currentText};
             }
             const chatInput = findChatInput();
@@ -732,7 +1062,7 @@
             ? {...outcome, mode: 'chat_message'}
             : outcome;
     };
-    const completeConfirmationDialog = async (dialog, button, decision, job, autoMode = false) => {
+    const completeConfirmationDialog = async (dialog, button, decision, job, autoMode = false, allowApplication = false) => {
         const dialogText = clean(dialog.innerText || dialog.textContent).slice(0, 500);
         if (/凭证失效|登录(?:已)?失效|登录过期|请重新登录/.test(dialogText)) {
             return {
@@ -742,24 +1072,46 @@
                 reason: `智联登录状态已失效，本次未发送：${dialogText}`,
             };
         }
-        const confirmButton = findActionByText(/^(确认|确定|投递|确定投递|确认投递|立即投递|确认申请|发送|使用该简历投递|继续投递)$/, dialog);
+        if (!allowApplication && /投递|申请|简历|附件/.test(dialogText)) {
+            return {success: false, safeSkip: true, retrySafe: true, reason: `检测到投递或简历流程，已跳过：${dialogText}`};
+        }
+        if (allowApplication && /上传|添加附件|选择本地文件/.test(dialogText)) {
+            return {success: false, reason: `投递弹窗要求上传附件，脚本不会自动选择本地文件：${dialogText}`};
+        }
+        if (!/(?:沟通|招呼|消息|聊天|投递|申请|在线简历)/.test(dialogText)) {
+            return {success: false, reason: `弹窗用途不明确，已停止：${dialogText}`};
+        }
+        const confirmPattern = allowApplication
+            ? /^(确认|确定|立即投递|确认投递|投递|申请|立即申请|继续)$/
+            : /^(确认|确定|发送|确认发送|继续沟通)$/;
+        const confirmButton = findActionByText(confirmPattern, dialog);
         if (!confirmButton) return {success: false, reason: `出现弹窗但没有识别到确认按钮：${dialogText}`};
         const confirmed = autoMode || window.confirm(`智联招聘出现二次确认弹窗：\n\n${dialogText}\n\n是否点击“${clean(confirmButton.innerText)}”？`);
         if (!confirmed) return {success: false, cancelled: true, reason: '用户取消二次确认'};
         const beforeText = clean(button?.innerText || button?.textContent);
         confirmButton.click();
         const outcome = await waitForContactOutcome(button, beforeText, 15000, dialog);
-        if (outcome.type === 'chat_input') return completeChatGreeting(outcome.element, decision, job, autoMode);
+        if (outcome.type === 'chat_input') {
+            if (allowApplication) {
+                return {
+                    success: true,
+                    detail: '投递完成并已进入沟通页；智联已发送默认招呼语和平台简历',
+                    mode: 'application_submitted',
+                };
+            }
+            return completeChatGreeting(outcome.element, decision, job, autoMode);
+        }
         return outcome.type === 'success'
-            ? {success: true, detail: outcome.detail, mode: 'confirmed_application'}
+            ? {success: true, detail: outcome.detail, mode: allowApplication ? 'application_submitted' : 'confirmed_contact'}
             : {success: false, reason: outcome.detail || '确认后未识别到成功状态'};
     };
     const executeZhaopinGreeting = async (job, decision, autoMode = false) => {
         const actionButton = findZhaopinContactAction();
-        if (!actionButton) return {success: false, reason: '没有识别到“立即沟通/申请职位”按钮'};
+        if (!actionButton) return {success: false, safeSkip: true, retrySafe: true, reason: '没有识别到“立即投递”或沟通按钮，本岗位已跳过'};
         const actionLabel = clean(actionButton.innerText || actionButton.textContent);
+        const isApplication = /投递|申请/.test(actionLabel);
         const confirmed = autoMode || window.confirm(
-            `即将进行一次真实操作：\n\n岗位：${job.title}\n公司：${job.company}\n匹配度：${decision.score}\n按钮：${actionLabel}\n\n只处理这一个岗位。是否继续？`
+            `即将进行一次真实操作：\n\n岗位：${job.title}\n公司：${job.company}\n匹配度：${decision.score}\n按钮：${actionLabel}\n${isApplication ? '该操作会投递智联在线简历并建立沟通。' : '该操作会建立沟通。'}\n\n是否继续？`
         );
         if (!confirmed) return {success: false, cancelled: true, reason: '用户取消首次确认'};
         const confirmedPlan = await requestLocal('/api/execution/plan', 'POST', {
@@ -774,9 +1126,18 @@
         const beforeUrl = location.href;
         actionButton.click();
         let outcome = await waitForContactOutcome(actionButton, actionLabel);
-        if (outcome.type === 'chat_input') return completeChatGreeting(outcome.element, decision, job, autoMode);
-        if (outcome.type === 'dialog') return completeConfirmationDialog(outcome.element, actionButton, decision, job, autoMode);
-        if (outcome.type === 'success') return {success: true, detail: outcome.detail, mode: 'direct_action'};
+        if (outcome.type === 'chat_input') {
+            if (isApplication) {
+                return {
+                    success: true,
+                    detail: '投递完成并已进入沟通页；智联已发送默认招呼语和平台简历',
+                    mode: 'application_submitted',
+                };
+            }
+            return completeChatGreeting(outcome.element, decision, job, autoMode);
+        }
+        if (outcome.type === 'dialog') return completeConfirmationDialog(outcome.element, actionButton, decision, job, autoMode, isApplication);
+        if (outcome.type === 'success') return {success: true, detail: outcome.detail, mode: isApplication ? 'application_submitted' : 'direct_contact'};
         if (outcome.type === 'unsupported_popup') {
             return {success: false, reason: `点击后出现尚未适配的沟通弹层：${outcome.detail || '未识别文字'}`};
         }
@@ -796,6 +1157,283 @@
         };
     };
 
+    const find51JobCard = job => {
+        const cards = getCards();
+        const titleIdentity = normalizeIdentity(job.title);
+        const companyIdentity = normalizeIdentity(job.company);
+        const externalId = clean(job.externalId).replace(/\.html$/i, '');
+        const ranked = cards.map((card, index) => {
+            const cardTitle = firstText(card, definition.title);
+            const cardCompany = normalizeCompany(firstText(card, definition.company));
+            const cardTitleIdentity = normalizeIdentity(cardTitle);
+            const cardCompanyIdentity = normalizeIdentity(cardCompany);
+            const html = String(card.outerHTML || '');
+            let score = 0;
+            if (externalId && /^\d{6,12}$/.test(externalId) && html.includes(externalId)) score += 20;
+            if (titleIdentity && cardTitleIdentity === titleIdentity) score += 10;
+            else if (titleIdentity && cardTitleIdentity
+                && (titleIdentity.includes(cardTitleIdentity) || cardTitleIdentity.includes(titleIdentity))) score += 5;
+            if (companyIdentity && cardCompanyIdentity === companyIdentity) score += 6;
+            else if (companyIdentity && cardCompanyIdentity
+                && (companyIdentity.includes(cardCompanyIdentity) || cardCompanyIdentity.includes(companyIdentity))) score += 3;
+            if (Number(job.listIndex) === index) score += 1;
+            return {card, score, cardTitle};
+        }).sort((left, right) => right.score - left.score);
+        return ranked[0]?.score >= 10 ? ranked[0].card : null;
+    };
+    const find51JobApplyButton = card => Array.from(card?.querySelectorAll?.('button,a,[role="button"]') || [])
+        .find(element => visible(element) && /^(投递|立即投递|投递简历|申请职位|立即申请)$/.test(clean(element.innerText || element.textContent))) || null;
+    const find51JobAppliedText = card => Array.from(card?.querySelectorAll?.('button,a,[role="button"],span') || [])
+        .map(element => clean(element.innerText || element.textContent))
+        .find(text => /^(已投递|已申请|已投简历)$/.test(text)) || '';
+    const job51SuccessText = card => {
+        const applied = find51JobAppliedText(card);
+        if (applied) return applied;
+        return visibleElements([
+            '.el-message', '.el-notification', '.el-message-box', '.el-dialog',
+            '[class*="toast"]', '[class*="message"]', '[role="alert"]',
+        ]).map(element => clean(element.innerText || element.textContent))
+            .find(text => /投递成功|申请成功|简历投递成功|已成功投递|已投递/.test(text)) || '';
+    };
+    const find51JobDialog = () => visibleElements([
+        '.el-dialog', '.el-message-box', '[role="dialog"]', '[class*="dialog"]', '[class*="modal"]',
+    ]).find(element => /投递|申请|简历|登录|凭证/.test(clean(element.innerText || element.textContent))) || null;
+    const waitFor51JobApplicationOutcome = async (card, ignoredDialog = null, timeoutMs = 15000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const successText = job51SuccessText(card);
+            if (successText) return {type: 'success', detail: successText};
+            const dialog = find51JobDialog();
+            if (dialog && dialog !== ignoredDialog && !ignoredDialog?.contains?.(dialog)) {
+                return {type: 'dialog', element: dialog};
+            }
+            await sleep(300);
+        }
+        return {type: 'unknown', detail: '点击投递后未识别到“已申请”、成功提示或确认弹窗'};
+    };
+    const complete51JobApplicationDialog = async (dialog, card, autoMode, job = null, decision = null) => {
+        const dialogText = clean(dialog.innerText || dialog.textContent).slice(0, 800);
+        if (/凭证失效|登录(?:已)?失效|登录过期|请重新登录/.test(dialogText)) {
+            return {success: false, authExpired: true, retrySafe: true, reason: `前程无忧登录状态已失效：${dialogText}`};
+        }
+        // 前程无忧主站会把部分校招职位转到应届生求职平台。这里没有完成主站投递，
+        // 不能记录成普通失败，也不能占用七天去重；下一次可在正确的平台继续处理。
+        if (/应届生|校园招聘|校招|网申|前往应届生|跳转应届生/.test(dialogText)) {
+            const forwardButton = findActionByText(/^(立即前往|前往|去应届生平台|继续申请)$/, dialog);
+            if (autoMode && forwardButton) {
+                await gmSet(CAMPUS_REQUEST_KEY, {
+                    job: job || {},
+                    decision: decision || {},
+                    createdAt: Date.now(),
+                });
+                forwardButton.click();
+            }
+            return {
+                success: false,
+                retrySafe: true,
+                campusRedirect: true,
+                handedOff: Boolean(autoMode && forwardButton),
+                reason: `检测到应届生/校园网申流程，${autoMode && forwardButton ? '已打开前往链接，' : ''}主站未完成投递：${dialogText}`,
+            };
+        }
+        if (/投递成功|申请成功|已成功投递|已投递/.test(dialogText)) {
+            return {success: true, detail: dialogText, mode: 'application_submitted'};
+        }
+        if (/上传|添加附件|选择本地文件/.test(dialogText)) {
+            return {success: false, reason: `投递弹窗要求上传本地文件，脚本不会自动选择文件：${dialogText}`};
+        }
+        if (!/投递|申请|简历/.test(dialogText)) {
+            return {success: false, reason: `弹窗用途不明确，已停止：${dialogText}`};
+        }
+        const confirmButton = findActionByText(/^(确认|确定|立即投递|确认投递|投递|申请|立即申请|使用该简历投递|继续投递|继续)$/, dialog);
+        if (!confirmButton) return {success: false, reason: `出现投递弹窗但没有识别到确认按钮：${dialogText}`};
+        if (!autoMode && !window.confirm(`前程无忧即将确认投递：\n\n${dialogText}\n\n是否点击“${clean(confirmButton.innerText)}”？`)) {
+            return {success: false, cancelled: true, retrySafe: true, reason: '用户取消确认投递'};
+        }
+        confirmButton.click();
+        const outcome = await waitFor51JobApplicationOutcome(card, dialog, 15000);
+        return outcome.type === 'success'
+            ? {success: true, detail: outcome.detail, mode: 'application_submitted'}
+            : {success: false, reason: outcome.detail || '确认后未识别到投递成功状态'};
+    };
+    const run51JobApplicationWorker = async () => {
+        if (platform !== 'job51') return false;
+        const request = await gmGet(APPLICATION_REQUEST_KEY);
+        if (!detailMatchesRequest(request)) return false;
+        await waitForDetail();
+        const root = document.body || document.documentElement;
+        let result;
+        const alreadyApplied = find51JobAppliedText(root);
+        if (alreadyApplied) {
+            result = {
+                success: false,
+                safeSkip: true,
+                alreadyApplied: true,
+                reason: `详情页显示“${alreadyApplied}”，无需重复投递`,
+                mode: 'application_already_done',
+            };
+        } else {
+            const button = findActionByText(/^(投递|立即投递|投递简历|申请职位|立即申请)$/, root);
+            if (!button) {
+                result = {success: false, safeSkip: true, retrySafe: true, reason: '详情页没有找到可用的“投递”按钮'};
+            } else {
+                button.scrollIntoView({block: 'center'});
+                button.click();
+                const outcome = await waitFor51JobApplicationOutcome(root);
+                if (outcome.type === 'dialog') {
+                    result = await complete51JobApplicationDialog(outcome.element, root, true, request, request);
+                } else if (outcome.type === 'success') {
+                    result = {success: true, detail: outcome.detail, mode: 'application_submitted'};
+                } else {
+                    result = {success: false, reason: outcome.detail || '详情页点击后未识别到投递结果'};
+                }
+            }
+        }
+        await gmSet(APPLICATION_RESPONSE_KEY, {
+            requestId: request.id,
+            ...result,
+            completedAt: new Date().toISOString(),
+        });
+        await sleep(300);
+        window.close();
+        return true;
+    };
+    const execute51JobApplicationInDetailTab = async job => {
+        const request = {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            platform,
+            externalId: job.externalId,
+            url: job.url,
+            title: job.title,
+            company: job.company,
+            createdAt: Date.now(),
+        };
+        await gmDelete(APPLICATION_RESPONSE_KEY);
+        await gmSet(APPLICATION_REQUEST_KEY, request);
+        const applicationTab = GM_openInTab(job.url, {active: false, insert: true, setParent: true});
+        const started = Date.now();
+        try {
+            while (Date.now() - started < 35000) {
+                await waitIfPaused();
+                const response = await gmGet(APPLICATION_RESPONSE_KEY);
+                if (response?.requestId === request.id) return response;
+                await sleep(400);
+            }
+            return {success: false, reason: '岗位详情页投递执行超时，未确认是否成功'};
+        } finally {
+            if (applicationTab?.close) applicationTab.close();
+            await gmDelete(APPLICATION_REQUEST_KEY);
+            await gmDelete(APPLICATION_RESPONSE_KEY);
+        }
+    };
+    const execute51JobApplication = async (job, decision, autoMode = false, sourceCard = null) => {
+        if (job.externalCampusUrl) {
+            return {
+                success: false,
+                safeSkip: true,
+                retrySafe: true,
+                reason: '该岗位详情属于校招/应届生子平台，本次只评分不自动跳转或投递',
+            };
+        }
+        const card = sourceCard || find51JobCard(job);
+        if (card) {
+            card.scrollIntoView({block: 'center'});
+            await sleep(180);
+            const alreadyApplied = find51JobAppliedText(card);
+            if (alreadyApplied) {
+                return {success: false, safeSkip: true, alreadyApplied: true, reason: `页面显示“${alreadyApplied}”，无需重复投递`, mode: 'application_already_done'};
+            }
+        }
+        const button = card ? find51JobApplyButton(card) : null;
+        if (!button && !job.url) return {success: false, safeSkip: true, retrySafe: true, reason: '没有定位到岗位卡片，也没有可用的岗位详情地址'};
+        const actionLabel = button ? clean(button.innerText || button.textContent) : '详情页投递';
+        if (!autoMode && !window.confirm(
+            `即将进行一次前程无忧真实投递：\n\n岗位：${job.title}\n公司：${job.company}\n匹配度：${decision.score}\n按钮：${actionLabel}\n\n是否继续？`
+        )) return {success: false, cancelled: true, retrySafe: true, reason: '用户取消投递'};
+        const confirmedPlan = await requestLocal('/api/execution/plan', 'POST', {
+            platform, job, decision, confirmedByUser: !autoMode,
+        });
+        if (!confirmedPlan.allowExecute) {
+            return {success: false, retrySafe: true, reason: `后端安全锁未放行：${confirmedPlan.blockedBy || 'unknown'}`};
+        }
+        await logAction({
+            action: 'job51_application_clicking', decisionId: decision.decisionId,
+            company: job.company, title: job.title, externalId: job.externalId, actionLabel,
+        });
+        await rememberLiveAttempt(job, decision, actionLabel);
+        if (!button) {
+            await addLog(`当前列表没有对应卡片，改从岗位详情页执行投递：[${job.company}] ${job.title}`);
+            return execute51JobApplicationInDetailTab(job);
+        }
+        button.click();
+        const outcome = await waitFor51JobApplicationOutcome(card);
+        if (outcome.type === 'dialog') return complete51JobApplicationDialog(outcome.element, card, autoMode, job, decision);
+        if (outcome.type === 'success') {
+            return {success: true, detail: outcome.detail, mode: 'application_submitted'};
+        }
+        return {success: false, reason: outcome.detail};
+    };
+    const runCampusApplicationWorker = async () => {
+        if (platform !== 'job51_campus') return false;
+        const request = await gmGet(CAMPUS_REQUEST_KEY);
+        if (!request?.createdAt || Date.now() - Number(request.createdAt) > 10 * 60 * 1000) return false;
+        const job = request.job || {};
+        const decision = request.decision || {};
+        const text = clean(document.body?.innerText || '').slice(0, 1200);
+        await sleep(1200);
+        let result;
+        if (/登录|注册|验证码|安全验证/.test(text) && !findActionByText(/^(立即投递|立即申请|投递简历|申请职位|申请)$/)) {
+            result = {success: false, manualRequired: true, reason: `校招平台需要登录或验证：${text.slice(0, 240)}`};
+        } else {
+            const already = Array.from(document.querySelectorAll('button,a,[role="button"],span'))
+                .map(element => clean(element.innerText || element.textContent))
+                .find(value => /^(已投递|已申请|已报名)$/.test(value));
+            if (already) {
+                result = {success: false, alreadyApplied: true, safeSkip: true, reason: `校招页面显示“${already}”`};
+            } else {
+                const apply = findActionByText(/^(立即投递|立即申请|投递简历|申请职位|申请)$/);
+                if (!apply) {
+                    result = {success: false, manualRequired: true, reason: '校招页面未识别到明确的“立即投递/立即申请”按钮，已停止'};
+                } else {
+                    apply.click();
+                    await sleep(900);
+                    const dialog = find51JobDialog();
+                    if (dialog) {
+                        const dialogText = clean(dialog.innerText || dialog.textContent).slice(0, 800);
+                        if (/登录|注册|验证码|安全验证|填写|上传|选择简历/.test(dialogText)) {
+                            result = {success: false, manualRequired: true, reason: `校招投递需要人工确认：${dialogText}`};
+                        } else {
+                            const confirm = findActionByText(/^(确认|确定|立即投递|立即申请|继续|提交)$/, dialog);
+                            if (confirm) confirm.click();
+                            await sleep(1200);
+                            result = /投递成功|申请成功|报名成功|已投递|已申请/.test(clean(document.body?.innerText || ''))
+                                ? {success: true, mode: 'campus_application_submitted', detail: '应届生平台已显示投递成功'}
+                                : {success: false, manualRequired: true, reason: '校招确认后未识别到成功状态'};
+                        }
+                    } else {
+                        await sleep(1200);
+                        result = /投递成功|申请成功|报名成功|已投递|已申请/.test(clean(document.body?.innerText || ''))
+                            ? {success: true, mode: 'campus_application_submitted', detail: '应届生平台已显示投递成功'}
+                            : {success: false, manualRequired: true, reason: '点击校招投递后未识别到成功状态'};
+                    }
+                }
+            }
+        }
+        await logAction({
+            action: result.success ? 'job51_campus_application_sent'
+                : result.alreadyApplied ? 'job51_campus_already_applied'
+                    : result.manualRequired ? 'job51_campus_manual_required' : 'job51_campus_application_failed',
+            decisionId: decision.decisionId,
+            company: job.company || null,
+            title: job.title || null,
+            score: decision.score,
+            reason: result.reason || null,
+            detail: result.detail || null,
+        });
+        await gmDelete(CAMPUS_REQUEST_KEY);
+        return true;
+    };
+
     const finishRun = async (state, message, config) => {
         const done = {...state, active: false, paused: false, phase: 'done', finishedAt: Date.now()};
         await saveState(done);
@@ -804,17 +1442,24 @@
         await addLog(config?.executionMode === 'test'
             ? '发送安全锁：未发送任何消息或简历'
             : Number(state.liveSent || 0) > 0
-                ? `本次已自动沟通 ${state.liveSent} 个岗位`
-                : '本次正式扫描未执行真实沟通');
+                ? `本次已自动${platform === 'job51' ? '投递' : '沟通'} ${state.liveSent} 个岗位`
+                : `本次正式扫描未执行真实${platform === 'job51' ? '投递' : '沟通'}`);
     };
     const recordLiveAttemptResult = async result => {
         if (result.retrySafe) {
             await forgetLiveAttempt({company: result.company, title: result.title});
         }
-        const action = result.success
-            ? 'zhaopin_greeting_sent'
-            : result.retrySafe ? 'zhaopin_contact_not_sent'
-                : result.cancelled ? 'zhaopin_greeting_cancelled' : 'zhaopin_greeting_failed';
+        const isJob51 = platform === 'job51';
+        const action = isJob51
+            ? result.campusRedirect ? 'job51_campus_redirect_skipped'
+                : result.alreadyApplied ? 'job51_already_applied'
+                : result.success ? 'job51_application_sent'
+                : result.retrySafe ? 'job51_application_not_sent'
+                    : result.cancelled ? 'job51_application_cancelled' : 'job51_application_failed'
+            : result.success
+                ? /^application_/.test(result.mode || '') ? 'zhaopin_application_sent' : 'zhaopin_greeting_sent'
+                : result.retrySafe ? 'zhaopin_contact_not_sent'
+                    : result.cancelled ? 'zhaopin_greeting_cancelled' : 'zhaopin_greeting_failed';
         await logAction({
             action,
             decisionId: result.decisionId,
@@ -838,19 +1483,38 @@
         await saveState(stopped);
         setRunButton(stopped);
         if (result.success) {
-            await addLog(`真实沟通已执行：${result.detail || '页面已显示成功状态'}`);
+            await addLog(`${/^application_/.test(result.mode || '') ? '在线简历已投递' : '真实沟通已执行'}：${result.detail || '页面已显示成功状态'}`);
         } else if (result.authExpired) {
-            await addLog(`智联登录已失效：本次确认未发送，请重新登录后再开始`);
+            await addLog(`${definition.name}登录已失效：本次确认未发送，请重新登录后再开始`);
         } else if (result.cancelled) {
             await addLog(`本次真实操作已取消：${result.reason}`);
+        } else if (result.campusRedirect) {
+            await addLog(`检测到校招网申：主站未完成投递，请在应届生平台手动申请；本次未占用七天去重`);
         } else {
             await addLog(`本次真实操作未完成：${result.reason}`);
         }
         await addLog('单岗位安全限制：程序已自动停止，不会继续处理其他岗位');
     };
+    const verify51JobSearchPage = state => {
+        if (platform !== 'job51') return;
+        const pageUrl = new URL(location.href);
+        const pageKeyword = clean(pageUrl.searchParams.get('keyword'));
+        const expectedKeyword = clean(state.currentKeyword);
+        const correctPath = pageUrl.hostname === 'we.51job.com' && pageUrl.pathname === '/pc/search';
+        const correctKeyword = normalizeIdentity(pageKeyword) === normalizeIdentity(expectedKeyword);
+        if (!correctPath || !correctKeyword) {
+            throw new Error(
+                `当前页面未进入目标搜索结果页（地址：${pageUrl.hostname}${pageUrl.pathname || '/'}，`
+                + `页面关键词：${pageKeyword || '无'}，目标关键词：${expectedKeyword || '无'}），`
+                + '已停止以避免扫描首页或上一轮推荐岗位',
+            );
+        }
+    };
     const processCurrentKeyword = async (config, state, keywords, maxJobs) => {
         // 搜索可能打开/切换页面；先检查任务所有权，避免旧页面和新页面各输出一次倒计时。
         state = await waitIfPaused();
+        verify51JobSearchPage(state);
+        if (platform === 'job51') await addLog('已确认目标搜索结果页与本轮关键词一致');
         const waitLeft = Math.max(0, MANUAL_FILTER_WAIT_MS - (Date.now() - Number(state.searchStartedAt || 0)));
         if (waitLeft > 0) {
             await addLog(`请在 ${(waitLeft / 1000).toFixed(0)} 秒内手动选择地区、薪资等筛选条件`);
@@ -869,27 +1533,108 @@
         const structureDiagnostics = collectStructureDiagnostics();
         await logAction({action: 'platform_structure_diagnostics', diagnostics: structureDiagnostics});
         await addLog(`结构诊断已记录：重复候选结构 ${structureDiagnostics.repeatedStructures.length} 组，相关资源 ${structureDiagnostics.resourcePaths.length} 条`);
+        let apiJobs = [];
+        if (platform === 'job51') {
+            try {
+                apiJobs = await fetch51JobSearchApi(state.currentKeyword, maxJobs);
+                if (apiJobs.length) {
+                    await addLog(`前程无忧搜索接口已返回 ${apiJobs.length} 个岗位，用于补充页面卡片的岗位 ID 和完整 JD`);
+                    await logAction({
+                        action: 'job51_search_api_succeeded',
+                        keyword: state.currentKeyword,
+                        count: apiJobs.length,
+                        fullDetailCount: apiJobs.filter(job => job.detailSource === 'search_api').length,
+                    });
+                }
+            } catch (error) {
+                await addLog(`前程无忧搜索接口暂不可用，自动回退页面卡片：${error.message}`);
+                await logAction({action: 'job51_search_api_failed', keyword: state.currentKeyword, reason: error.message});
+            }
+        }
+        // 前程无忧真实投递必须以当前页面的 DOM 卡片为准；搜索接口只补充完整 JD。
+        // 这样评分通过后可以直接点击同一张卡片的投递按钮，不依赖接口结果顺序。
         const cards = await loadCards(Math.min(maxJobs, 100));
-        if (!cards.length) {
+        if (!apiJobs.length && !cards.length) {
             await addLog(`页面诊断：${pageDiagnostics()}`);
             throw new Error('没有识别到岗位列表；请确认已经登录，且当前页面确实显示了岗位卡片');
         }
-        await addLog(platform === 'zhaopin' && Number(state.keywordIndex || 0) > 0
-            ? `岗位列表已识别 ${cards.length} 条（可能包含前轮保留卡片，处理时自动去重）`
-            : `岗位列表已识别 ${cards.length} 条`);
+        if (cards.length) {
+            await addLog(platform === 'zhaopin' && Number(state.keywordIndex || 0) > 0
+                ? `岗位列表已识别 ${cards.length} 条（可能包含前轮保留卡片，处理时自动去重）`
+                : `岗位列表已识别 ${cards.length} 条`);
+        }
+        const sources = cards.length
+            ? cards.map((card, index) => ({card, cardJob: null, index}))
+            : apiJobs.map(cardJob => ({card: null, cardJob}));
         const roundLimit = maxJobs;
         let current = await readState();
-        const seen = new Set(Array.isArray(current.seen) ? current.seen : []);
+        const keywordSeenKey = String(Number(current.keywordIndex || 0));
+        const seenByKeyword = current.seenByKeyword && typeof current.seenByKeyword === 'object'
+            ? current.seenByKeyword
+            : {};
+        // 每个搜索词单独去重，保证“每词查看 10 个”确实能分别达到 10 个。
+        // 真正发送时仍由七天去重和真实点击记录阻止跨关键词重复联系。
+        const seen = new Set(Array.isArray(seenByKeyword[keywordSeenKey]) ? seenByKeyword[keywordSeenKey] : []);
+        const withCurrentKeywordSeen = value => ({
+            ...value,
+            seenByKeyword: {
+                ...(value.seenByKeyword || {}),
+                [keywordSeenKey]: Array.from(seen).slice(-1000),
+            },
+        });
         let roundProcessed = 0;
-        for (const [index, card] of cards.entries()) {
+        for (const source of sources) {
             current = await waitIfPaused();
             if (keywordRemaining(current, maxJobs) <= 0 || roundProcessed >= roundLimit) break;
-            const cardJob = extractCard(card, index);
+            const card = source.card;
+            let cardJob = source.cardJob || await extractCard(card, source.index);
+            if (platform === 'job51' && card && apiJobs.length) {
+                const titleIdentity = normalizeIdentity(cardJob.title);
+                const companyIdentity = normalizeIdentity(cardJob.company);
+                const apiMatch = apiJobs.find(item => {
+                    const apiTitle = normalizeIdentity(item.title);
+                    const apiCompany = normalizeIdentity(item.company);
+                    const titleMatched = titleIdentity && apiTitle && titleIdentity === apiTitle;
+                    const companyMatched = !companyIdentity || !apiCompany
+                        || companyIdentity === apiCompany
+                        || companyIdentity.includes(apiCompany)
+                        || apiCompany.includes(companyIdentity);
+                    return titleMatched && companyMatched;
+                });
+                if (apiMatch) {
+                    cardJob = {
+                        ...cardJob,
+                        externalId: apiMatch.externalId || cardJob.externalId,
+                        url: apiMatch.url || cardJob.url,
+                        company: cardJob.company || apiMatch.company,
+                        salary: cardJob.salary || apiMatch.salary,
+                        detail: apiMatch.detail || cardJob.detail,
+                        detailSource: apiMatch.detailSource || cardJob.detailSource,
+                        detailLength: apiMatch.detailLength || clean(cardJob.detail).length,
+                    };
+                }
+            }
             const key = cardJob.url || `${cardJob.title}|${cardJob.company}`;
             if (!cardJob.title || seen.has(key)) continue;
             seen.add(key);
             await addLog(`| 当前搜索词: ${maxJobs - keywordRemaining(current, maxJobs) + 1}/${maxJobs} | 正在获取职位详情 |`);
-            const job = await fetchDetail(cardJob, card);
+            if (platform === 'job51') {
+                await addLog(cardJob.externalCampusUrl
+                    ? '检测到校招/应届生子平台链接，未打开外部详情页'
+                    : cardJob.detailSource === 'search_api'
+                    ? '已从前程无忧搜索接口读取岗位 ID 和完整 JD'
+                    : cardJob.detailSource === 'search_api_summary'
+                        ? '已从搜索接口读取岗位 ID，正在补充完整 JD'
+                        : cardJob.url
+                            ? '已捕获前程无忧真实岗位地址，正在读取完整 JD'
+                            : '未捕获到真实岗位地址，本岗位暂用卡片摘要评分');
+            }
+            const job = cardJob.detailSource === 'search_api'
+                ? cardJob
+                : await fetchDetail(cardJob, card);
+            if (platform === 'job51' && cardJob.url && !['detail_page', 'search_api'].includes(job.detailSource)) {
+                await addLog(`岗位 [${cardJob.title}] 详情补充未完成，本次使用现有摘要评分`);
+            }
             await addLog(job.company ? `已识别公司：[${job.company}]` : `岗位 [${job.title}] 未识别到公司名称`);
             if (job.detailSource === 'job_card_inline_timeout') {
                 await addLog(`岗位 [${job.title}] 右侧详情加载超时，本次只记录失败，不使用卡片摘要评分`);
@@ -906,7 +1651,7 @@
                     cardStructure: job.cardStructure || [],
                 });
                 roundProcessed += 1;
-                current = {...recordKeywordView(current), seen: Array.from(seen).slice(-1000)};
+                current = withCurrentKeywordSeen(recordKeywordView(current));
                 await saveState(current);
                 continue;
             }
@@ -943,11 +1688,11 @@
                 blockedBy: plan.blockedBy,
             });
             roundProcessed += 1;
-            current = {...recordKeywordView(current), seen: Array.from(seen).slice(-1000)};
+            current = withCurrentKeywordSeen(recordKeywordView(current));
             await saveState(current);
             if (
                 config.executionMode === 'live'
-                && platform === 'zhaopin'
+                && ['zhaopin', 'job51', 'job51_campus'].includes(platform)
                 && plan.allowExecute
             ) {
                 const locallyAttempted = await hasLiveAttempt(job);
@@ -955,9 +1700,11 @@
                     await forgetLiveAttempt(job);
                     await addLog(`岗位 [${job.title}] 上次因登录失效确认未发送，已允许重试`);
                 } else if (locallyAttempted) {
-                    await addLog(`岗位 [${job.title}] 曾点击过真实沟通按钮，为避免重复联系已跳过`);
+                    await addLog(platform === 'job51'
+                        ? `岗位 [${job.title}] 曾点击过真实投递按钮，为避免重复投递已跳过`
+                        : `岗位 [${job.title}] 曾点击过真实沟通按钮，为避免重复联系已跳过`);
                     await logAction({
-                        action: 'zhaopin_duplicate_attempt_blocked',
+                        action: platform === 'job51' ? 'job51_duplicate_attempt_blocked' : 'zhaopin_duplicate_attempt_blocked',
                         decisionId: decision.decisionId,
                         company: job.company,
                         title: job.title,
@@ -965,7 +1712,9 @@
                     continue;
                 }
                 const autoMode = config.deliveryMode === 'auto';
-                const result = await executeZhaopinGreeting(job, decision, autoMode);
+                const result = ['job51', 'job51_campus'].includes(platform)
+                    ? await execute51JobApplication(job, decision, autoMode, card)
+                    : await executeZhaopinGreeting(job, decision, autoMode);
                 const completeResult = {
                     ...result,
                     decisionId: decision.decisionId,
@@ -977,10 +1726,15 @@
                     await recordLiveAttemptResult(completeResult);
                     current = {...current, liveSent: Number(current.liveSent || 0) + 1};
                     await saveState(current);
-                    await addLog(`自动沟通成功：[${job.company}] ${job.title}｜${result.detail || '已发起沟通'}`);
+                    await addLog(`${/^application_/.test(result.mode || '') ? '自动投递成功' : '自动沟通成功'}：[${job.company}] ${job.title}｜${result.detail || '已完成真实操作'}`);
                     const nextDelay = 3500 + Math.floor(Math.random() * 3000);
                     await addLog(`将在 ${(nextDelay / 1000).toFixed(1)} 秒后继续，避免连续快速操作`);
                     await sleep(nextDelay);
+                    continue;
+                }
+                if (autoMode && result.safeSkip) {
+                    await recordLiveAttemptResult(completeResult);
+                    await addLog(`已安全跳过：[${job.company}] ${job.title}｜${result.reason}`);
                     continue;
                 }
                 await finishLiveAttempt(current, completeResult);
@@ -1014,24 +1768,42 @@
             let state = await readState();
             if (!state.active || state.paused) return;
             const config = await requestLocal('/client-config');
+            await syncLiveAttemptReset();
             if (!['test', 'live'].includes(config.executionMode)) throw new Error('控制台运行模式无效');
-            if (config.executionMode === 'live' && platform !== 'zhaopin') {
+            if (config.executionMode === 'live' && !['zhaopin', 'job51', 'job51_campus'].includes(platform)) {
                 throw new Error('当前平台尚未开放真实操作，请切换回“测试模式”');
             }
-            if (config.executionMode === 'live' && !config.platforms?.[platform]?.enabled) {
+            const configuredPlatform = platform === 'job51_campus' ? 'job51' : platform;
+            if (config.executionMode === 'live' && !config.platforms?.[configuredPlatform]?.enabled) {
                 throw new Error(`本地控制台尚未启用${definition.name}，请先打开平台开关`);
             }
             if (!state.modeAnnounced) {
                 await addLog(config.executionMode === 'test'
                     ? '运行模式：只测试，不发送'
-                    : config.deliveryMode === 'auto'
-                        ? '运行模式：智联正式模式｜自动沟通｜去重｜异常自动停止｜不发附件'
-                    : '运行模式：智联正式模式｜筛选不发送');
+                    : ['job51', 'job51_campus'].includes(platform)
+                        ? config.deliveryMode === 'auto'
+                            ? '运行模式：前程无忧正式模式｜达到阈值后投递平台简历｜七天去重｜不上传附件'
+                            : '运行模式：前程无忧正式模式｜筛选不发送'
+                        : config.deliveryMode === 'auto'
+                            ? '运行模式：智联正式模式｜达到阈值后投递在线简历并建立沟通｜去重｜不上传附件'
+                            : '运行模式：智联正式模式｜筛选不发送');
                 state = {...state, modeAnnounced: true};
                 await saveState(state);
             }
-            const keywords = Array.isArray(config.tags) ? config.tags.map(clean).filter(Boolean) : [];
+            const configuredKeywords = Array.isArray(config.tags) ? config.tags.map(clean).filter(Boolean) : [];
+            const keywordMap = new Map();
+            for (const keyword of configuredKeywords) {
+                const identity = normalizeIdentity(keyword);
+                if (identity && !keywordMap.has(identity)) keywordMap.set(identity, keyword);
+            }
+            const keywords = Array.from(keywordMap.values());
             if (!keywords.length) throw new Error('控制台没有配置搜索关键词');
+            if (!state.keywordsAnnounced) {
+                const mergedCount = configuredKeywords.length - keywords.length;
+                await addLog(`本次共 ${keywords.length} 轮有效搜索词${mergedCount ? `（已合并 ${mergedCount} 个仅空格或标点不同的重复词）` : ''}`);
+                state = {...state, keywordsAnnounced: true};
+                await saveState(state);
+            }
             const configuredMax = Number(config.frontend?.maxJobsPerKeyword || 0);
             const maxJobs = configuredMax > 0 ? configuredMax : DEFAULT_MAX_JOBS_PER_KEYWORD;
             if (state.phase === 'search') {
@@ -1085,30 +1857,47 @@
             keywordProcessed: {},
             pageAdvanceCount: 0,
             liveSent: 0,
-            seen: [],
+            seenByKeyword: {},
             ownerId: INSTANCE_ID,
             startedAt: Date.now(),
             modeAnnounced: false,
+            keywordsAnnounced: false,
         };
         await saveState(state);
         setRunButton(state);
         await addLog('--程序启动--');
-        await addLog(`平台：${definition.name}｜${authState()}｜正在读取控制台运行模式`);
+        await addLog(`平台：${definition.name}｜脚本版本：${SCRIPT_VERSION}｜${authState()}｜正在读取控制台运行模式`);
         await runEngine();
     };
 
     (async () => {
+        if (await runCampusApplicationWorker()) return;
+        if (await run51JobApplicationWorker()) return;
         if (await runDetailWorker()) return;
         ui = createPanel();
         renderLogs(await gmGet(LOG_KEY, []));
         ui.clearBtn.addEventListener('click', clearLogs);
         ui.runBtn.addEventListener('click', handleRunClick);
         let state = await readState();
-        // 用户手动刷新代表结束本次运行；脚本点击搜索造成的正常页面跳转仍会自动续跑。
-        if (state.active && navigationType() === 'reload') {
+        // 前程无忧提交搜索时可能整页刷新。只要刷新发生在脚本刚提交搜索后的短窗口内，
+        // 就视为正常任务跳转并续跑；其他 reload 才视为用户手动刷新。
+        const currentUrlKeyword = clean(new URL(location.href).searchParams.get('keyword'));
+        const expected51JobNavigation = platform === 'job51'
+            && state.active
+            && state.phase === 'collect'
+            && state.pendingNavigation
+            && normalizeIdentity(currentUrlKeyword) === normalizeIdentity(state.currentKeyword);
+        const recentScriptSearch = state.active
+            && state.phase === 'collect'
+            && Date.now() - Number(state.searchStartedAt || 0) < 20000;
+        if (state.active && navigationType() === 'reload' && !recentScriptSearch && !expected51JobNavigation) {
             state = {...state, active: false, paused: false, phase: 'refreshed', ownerId: INSTANCE_ID};
             await saveState(state);
             await addLog('检测到手动刷新，已结束旧任务；点击“开始”可重新运行');
+        }
+        if (expected51JobNavigation) {
+            state = {...state, pendingNavigation: false, navigationTarget: ''};
+            await saveState(state);
         }
         const ownedState = state.active ? await claimState(state) : state;
         setRunButton(ownedState);

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime
 from unittest import mock
 from pathlib import Path
 
@@ -312,6 +313,8 @@ class SingleRouteBackendTests(unittest.TestCase):
             'tools.openTabNSetTimestamp(jobInfo.chatUrl, this.targets.chatGreet)',
             script,
         )
+        self.assertNotIn('const sendResume', script)
+        self.assertNotIn("action: 'resume_sent'", script)
 
     def test_multi_platform_runner_keeps_test_lock_and_limits_live_greeting(self):
         script = (ROOT / 'multi_platform_test.user.js').read_text(encoding='utf-8')
@@ -325,18 +328,52 @@ class SingleRouteBackendTests(unittest.TestCase):
             "cards: ['.job-card'", 'fetchInlineZhaopinDetail', 'inline_detail_panel',
             'clickTarget.click()', 'platform_job_detail_failed', 'observedTitle', 'companyMatched', 'isOutsourcedClient', 'clientCompany', 'detailBodyText', '职位描述|职位详情|岗位职责', '•…⋯', '不使用卡片摘要评分', '先检查任务所有权',
             "navigationType() === 'reload'", '检测到手动刷新',
+            'canonicalJobUrl', 'dedupeJobCards', "/\\d+\\.html$/i", 'const candidates = best.length ? best : linkCards',
+            "const SCRIPT_VERSION = '2026-10-05.3'", '脚本版本：${SCRIPT_VERSION}',
+            "document.querySelectorAll('.joblist-item')", '前程无忧新版主搜索结果是无链接的 .joblist-item',
+            "if (!clean(value)) return '';",
+            'const keywordMap = new Map()', '已合并 ${mergedCount} 个仅空格或标点不同的重复词',
+            'const recentScriptSearch = state.active', "state.phase === 'collect'", '!recentScriptSearch',
+            "target.searchParams.set('keyword', keyword)", "location.assign(target.toString())", '正在打开下一搜索结果页，页面加载后将自动继续',
+            "new URL('https://we.51job.com/pc/search')", "currentUrl.pathname === '/pc/search'",
+            'capture51JobDetailUrl', 'is51JobDetailUrl', 'is51JobCampusUrl', 'pendingNavigation',
+            '只读 DOM 中已有的地址', '该岗位详情属于校招/应届生子平台',
+            '检测到校招/应届生子平台链接，未打开外部详情页',
+            'validJobTitle', 'platform === \'job51\' ? cardJob.title', 'htmlToText',
+            'const keywordSeenKey', 'seenByKeyword', '每个搜索词单独去重',
+            'findMatching51JobDetailUrl', '岗位名 + 公司',
+            'fetch51JobSearchApi', '/api/job/search-pc', "credentials: 'include'",
+            'job51_search_api_succeeded', 'job51_search_api_failed',
+            '已从前程无忧搜索接口读取岗位 ID 和完整 JD',
+            'execute51JobApplication', 'find51JobApplyButton', 'job51_application_clicking',
+            'job51_application_sent', 'job51_duplicate_attempt_blocked',
+            'campusRedirect', 'job51_campus_redirect_skipped', 'job51_campus_application_sent', 'runCampusApplicationWorker', '检测到应届生/校园网申流程',
+            'run51JobApplicationWorker', 'execute51JobApplicationInDetailTab',
+            'APPLICATION_REQUEST_KEY', 'APPLICATION_RESPONSE_KEY', '详情页投递',
+            '搜索接口只补充完整 JD', 'execute51JobApplication(job, decision, autoMode, card)',
+            'LIVE_ATTEMPT_TTL_MS', 'syncLiveAttemptReset', '/api/job-history/control',
+            '// @noframes', 'if (window.top !== window.self) return;', '当前页面已经是目标搜索词，直接扫描岗位列表',
+            'validSalaryText', 'firstSalary', 'verify51JobSearchPage',
+            '已确认目标搜索结果页与本轮关键词一致', '已停止以避免扫描首页或上一轮推荐岗位',
         ):
             self.assertIn(marker, script)
         self.assertIn('bottom:16px;left:16px;width:380px', script)
+        self.assertIn('// @match        https://*.51job.com/*', script)
         self.assertIn("config.executionMode === 'test' && plan.allowExecute", script)
-        self.assertIn("config.executionMode === 'live' && platform !== 'zhaopin'", script)
-        self.assertIn("!config.platforms?.[platform]?.enabled", script)
+        self.assertIn("config.executionMode === 'live' && !['zhaopin', 'job51', 'job51_campus'].includes(platform)", script)
+        self.assertIn("!config.platforms?.[configuredPlatform]?.enabled", script)
         self.assertIn('&& plan.allowExecute', script)
         self.assertIn('window.confirm(', script)
         self.assertIn('单岗位安全限制', script)
         self.assertIn('zhaopin_greeting_sent', script)
+        self.assertIn('zhaopin_application_sent', script)
         self.assertIn('rememberLiveAttempt(job, decision, actionLabel)', script)
         self.assertIn('zhaopin_duplicate_attempt_blocked', script)
+        self.assertIn('立即投递|投递职位|申请职位|立即申请', script)
+        self.assertIn('该操作会投递智联在线简历并建立沟通', script)
+        self.assertIn('没有识别到“立即投递”或沟通按钮', script)
+        self.assertIn('if (autoMode && result.safeSkip)', script)
+        self.assertIn('已安全跳过：', script)
         self.assertNotIn('sendGreeting(', script)
         self.assertNotIn('sendResume(', script)
         self.assertNotIn('applyJob(', script)
@@ -352,10 +389,11 @@ class SingleRouteBackendTests(unittest.TestCase):
         script = (ROOT / 'web_script.js').read_text(encoding='utf-8')
 
         blocked_action = "action: 'job_company_blocked'"
-        score_call = 'const decision = await api.getJobScore(jobInfo.title, jobInfo.salary, jobInfo.detail, jobInfo.company);'
+        score_call = 'const decision = await api.getJobScore('
         self.assertIn(blocked_action, script)
         self.assertIn('getBlockedCompanyKeyword(jobInfo.company)', script)
         self.assertIn('if (companyBlacklistEnabled && !isUsableCompanyName(jobInfo.company))', script)
+        self.assertIn("info.companyType === 'recruiter_agency' && cardHasDifferentCompany", script)
         self.assertIn("'公司', '公司信息', '企业', '企业信息'", script)
         self.assertIn("action: 'job_company_unknown'", script)
         self.assertLess(script.index(blocked_action), script.index(score_call))
@@ -398,8 +436,74 @@ class SingleRouteBackendTests(unittest.TestCase):
 
                 response = asyncio.run(main.get_job_report())
                 page = response.body.decode('utf-8')
-        for column in ['时间', '公司', '岗位', '薪资', '分数', '结果']:
+        for column in ['时间', '公司', '岗位', '分数', '打招呼状态', '薪资', '结果']:
             self.assertIn(f'<th>{column}</th>', page)
+        self.assertIn('table-layout:fixed', page)
+        self.assertIn('overflow-x:hidden', page)
+        self.assertNotIn('white-space:nowrap', page)
+
+    def test_report_shows_score_and_successful_greeting_status(self):
+        import main
+
+        decision = {
+            'loggedAt': '2026-10-03T11:10:00',
+            'decisionId': 'decision-greeted',
+            'company': '测试公司',
+            'title': 'VLA算法工程师',
+            'salary': '20-30K',
+            'score': 92,
+        }
+        action = {
+            'loggedAt': '2026-10-03T11:10:01',
+            'decisionId': 'decision-greeted',
+            'action': 'greet_api_succeeded',
+            'company': '测试公司',
+            'title': 'VLA算法工程师',
+            'salary': '20-30K',
+            'score': 92,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / 'job_decisions.jsonl'
+            action_path = Path(temp_dir) / 'job_actions.jsonl'
+            log_path.write_text(json.dumps(decision, ensure_ascii=False) + '\n', encoding='utf-8')
+            action_path.write_text(json.dumps(action, ensure_ascii=False) + '\n', encoding='utf-8')
+            with mock.patch.object(main, 'LOG_PATH', log_path), mock.patch.object(main, 'ACTION_LOG_PATH', action_path):
+                rows = main.build_job_report_rows()
+
+        self.assertEqual(rows[0]['score'], 92)
+        self.assertEqual(rows[0]['greetingStatus'], '已打招呼')
+        self.assertEqual(rows[0]['result'], '已沟通')
+
+    def test_job_history_has_separate_page_and_can_be_cleared(self):
+        import main
+
+        decision = {
+            'loggedAt': datetime.now().isoformat(timespec='seconds'),
+            'decisionId': 'history-record',
+            'company': '测试公司',
+            'title': 'VLA算法工程师',
+            'salary': '20-30K',
+            'score': 92,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / 'job_decisions.jsonl'
+            action_path = Path(temp_dir) / 'job_actions.jsonl'
+            control_path = Path(temp_dir) / 'job_history_control.json'
+            log_path.write_text(json.dumps(decision, ensure_ascii=False) + '\n', encoding='utf-8')
+            with mock.patch.object(main, 'LOG_PATH', log_path), mock.patch.object(main, 'ACTION_LOG_PATH', action_path), mock.patch.object(main, 'JOB_HISTORY_CONTROL_PATH', control_path):
+                before = main.build_job_history_rows()
+                response = asyncio.run(main.get_job_history())
+                report_response = asyncio.run(main.get_job_report())
+                cleared = asyncio.run(main.api_clear_job_history())
+                after = main.build_job_history_rows()
+
+        page = response.body.decode('utf-8')
+        self.assertEqual(len(before), 1)
+        self.assertIn('七天去重记录', page)
+        self.assertIn('一键清空', page)
+        self.assertNotIn('七天去重记录', report_response.body.decode('utf-8'))
+        self.assertTrue(cleared['success'])
+        self.assertEqual(after, [])
 
     def test_json_line_escapes_unusual_line_terminators(self):
         from main import _json_line
@@ -451,6 +555,59 @@ class SingleRouteBackendTests(unittest.TestCase):
 
         self.assertEqual(rows[0]['company'], '未记录')
 
+    def test_empty_salary_does_not_consume_job_description_in_report(self):
+        import main
+
+        decision = {
+            'loggedAt': '2026-10-04T22:06:30',
+            'decisionId': 'empty-salary',
+            'platform': 'job51',
+            'company': '数据通信科学技术研究所',
+            'title': '人工智能算法工程师',
+            'salary': '',
+            'score': 0,
+            'rawJob': '# 职位名称\n人工智能算法工程师\n\n# 薪资范围\n\n\n# 职位描述\n人工智能算法工程师 北京 国企150-500人 投递',
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / 'job_decisions.jsonl'
+            action_path = Path(temp_dir) / 'job_actions.jsonl'
+            log_path.write_text(json.dumps(decision, ensure_ascii=False) + '\n', encoding='utf-8')
+            action_path.write_text('', encoding='utf-8')
+            with mock.patch.object(main, 'LOG_PATH', log_path), mock.patch.object(main, 'ACTION_LOG_PATH', action_path):
+                rows = main.build_job_report_rows()
+
+        self.assertEqual(main._extract_raw_section(decision['rawJob'], '薪资范围'), '')
+        self.assertEqual(rows[0]['salary'], '未记录')
+
+    def test_report_rejects_legacy_object_salary(self):
+        import main
+
+        self.assertEqual(main._report_salary('[object Object]'), '未记录')
+        self.assertEqual(main._report_salary('1.5-2.5万·16薪'), '1.5-2.5万·16薪')
+        self.assertEqual(main._report_salary('', 'FA技术工程师 9千-1万·13薪 北京'), '9千-1万·13薪')
+        self.assertEqual(main._report_salary('', '管理培训生 8千-1.2万 杭州'), '8千-1.2万')
+
+    def test_report_displays_known_headhunter_organization(self):
+        import main
+
+        action = {
+            'loggedAt': '2026-09-30T00:14:56',
+            'action': 'job_skip',
+            'company': None,
+            'recruiterCompany': '优猎九九',
+            'title': '具身智能算法工程师',
+            'reason': '招聘者信息标注为猎头顾问',
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / 'job_decisions.jsonl'
+            action_path = Path(temp_dir) / 'job_actions.jsonl'
+            log_path.write_text('', encoding='utf-8')
+            action_path.write_text(json.dumps(action, ensure_ascii=False) + '\n', encoding='utf-8')
+            with mock.patch.object(main, 'LOG_PATH', log_path), mock.patch.object(main, 'ACTION_LOG_PATH', action_path):
+                rows = main.build_job_report_rows()
+
+        self.assertEqual(rows[0]['company'], '招聘机构：优猎九九')
+
     def test_product_console_and_platform_registry_are_available(self):
         import main
 
@@ -459,18 +616,28 @@ class SingleRouteBackendTests(unittest.TestCase):
         platforms = asyncio.run(main.api_platforms())
 
         self.assertIn('智能求职 Agent', page)
-        self.assertIn('测试模式（推荐）', page)
+        self.assertNotIn('05 · 测试与执行', page)
+        self.assertNotIn('id="executionMode"', page)
+        self.assertIn('href="/job-report"', page)
+        self.assertIn('href="/job-history"', page)
         self.assertEqual([item['id'] for item in platforms], ['boss', 'zhaopin', 'job51'])
         self.assertTrue(platforms[0]['implemented'])
         self.assertTrue(platforms[1]['implemented'])
         self.assertTrue(platforms[1]['manualConfirmationRequired'])
-        self.assertFalse(platforms[2]['implemented'])
+        self.assertFalse(platforms[0]['capabilities']['initialAttachment'])
+        self.assertTrue(platforms[1]['capabilities']['initialAttachment'])
+        self.assertTrue(platforms[1]['capabilities']['platformResume'])
+        self.assertTrue(platforms[2]['implemented'])
+        self.assertTrue(platforms[2]['capabilities']['search'])
+        self.assertTrue(platforms[2]['capabilities']['companyName'])
+        self.assertTrue(platforms[2]['capabilities']['platformResume'])
+        self.assertFalse(platforms[2]['capabilities']['greeting'])
         for platform in platforms:
             self.assertIn('company', platform['requiredJobFields'])
             self.assertTrue(platform['companyExtraction']['listSelectors'])
             self.assertTrue(platform['companyExtraction']['detailSelectors'])
 
-    def test_execution_plan_blocks_all_platforms_in_test_mode(self):
+    def test_auto_delivery_ignores_removed_execution_mode_switch(self):
         import main
         import product_store
 
@@ -484,18 +651,17 @@ class SingleRouteBackendTests(unittest.TestCase):
                     'deliveryMode': 'auto',
                 }))
                 product_store.save_product_config({'executionMode': 'test'})
-                for platform in ('boss', 'zhaopin', 'job51'):
-                    with self.subTest(platform=platform):
-                        plan = asyncio.run(main.api_execution_plan({
-                            'platform': platform,
-                            'job': {'platform': platform, 'company': '测试科技有限公司'},
-                            'decision': {'score': 100},
-                        }))
-                        self.assertFalse(plan['allowExecute'])
-                        self.assertEqual(plan['blockedBy'], 'test_mode')
-                        self.assertTrue(plan['plannedActions'])
+                plan = asyncio.run(main.api_execution_plan({
+                    'platform': 'boss',
+                    'job': {'platform': 'boss', 'company': '测试科技有限公司'},
+                    'decision': {'score': 100},
+                }))
 
-    def test_unfinished_platform_stays_blocked_even_in_live_mode(self):
+        self.assertTrue(plan['allowExecute'])
+        self.assertIsNone(plan['blockedBy'])
+        self.assertEqual(plan['executionMode'], 'live')
+
+    def test_job51_auto_delivery_is_allowed_when_platform_is_enabled(self):
         import main
         import product_store
 
@@ -508,15 +674,19 @@ class SingleRouteBackendTests(unittest.TestCase):
                     'threshold': 50,
                     'deliveryMode': 'auto',
                 }))
-                product_store.save_product_config({'executionMode': 'live'})
+                product_store.save_product_config({
+                    'executionMode': 'live',
+                    'platforms': {'job51': {'enabled': True}},
+                })
                 plan = asyncio.run(main.api_execution_plan({
                     'platform': 'job51',
                     'job': {'platform': 'job51', 'company': '测试科技有限公司'},
                     'decision': {'score': 100},
                 }))
 
-        self.assertFalse(plan['allowExecute'])
-        self.assertEqual(plan['blockedBy'], 'adapter_not_live')
+        self.assertTrue(plan['allowExecute'])
+        self.assertIsNone(plan['blockedBy'])
+        self.assertEqual(plan['plannedActions'][0]['type'], 'apply_job')
 
     def test_zhaopin_legacy_review_stays_screen_only_even_with_confirmation(self):
         import main
@@ -576,7 +746,8 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertTrue(plan['allowExecute'])
         self.assertFalse(plan['manualConfirmationRequired'])
         self.assertIsNone(plan['blockedBy'])
-        self.assertEqual(plan['plannedActions'][0]['type'], 'auto_greet')
+        self.assertEqual(plan['plannedActions'][0]['type'], 'apply_and_contact')
+        self.assertEqual(plan['plannedActions'][0]['label'], '点击立即投递（默认招呼语 + 智联简历）')
 
     def test_zhaopin_prior_real_click_blocks_duplicate_contact(self):
         import main
@@ -587,6 +758,7 @@ class SingleRouteBackendTests(unittest.TestCase):
             secrets_path = Path(temp_dir) / 'secrets.json'
             action_path = Path(temp_dir) / 'job_actions.jsonl'
             action_path.write_text(json.dumps({
+                'loggedAt': datetime.now().isoformat(timespec='seconds'),
                 'platform': 'zhaopin',
                 'action': 'zhaopin_contact_clicking',
                 'company': '厚朴(深圳)人工智能有限公司',
@@ -621,9 +793,10 @@ class SingleRouteBackendTests(unittest.TestCase):
             config_path = Path(temp_dir) / 'product_config.json'
             secrets_path = Path(temp_dir) / 'secrets.json'
             action_path = Path(temp_dir) / 'job_actions.jsonl'
+            logged_at = datetime.now().isoformat(timespec='seconds')
             actions = [
-                {'platform': 'zhaopin', 'action': 'zhaopin_contact_clicking', 'company': '测试公司', 'title': '大客户销售'},
-                {'platform': 'zhaopin', 'action': 'zhaopin_greeting_failed', 'company': '测试公司', 'title': '大客户销售', 'reason': '用户凭证失效'},
+                {'loggedAt': logged_at, 'platform': 'zhaopin', 'action': 'zhaopin_contact_clicking', 'company': '测试公司', 'title': '大客户销售'},
+                {'loggedAt': logged_at, 'platform': 'zhaopin', 'action': 'zhaopin_greeting_failed', 'company': '测试公司', 'title': '大客户销售', 'reason': '用户凭证失效'},
             ]
             action_path.write_text(''.join(json.dumps(item, ensure_ascii=False) + '\n' for item in actions), encoding='utf-8')
             with mock.patch.object(product_store, 'CONFIG_PATH', config_path), mock.patch.object(product_store, 'SECRETS_PATH', secrets_path), mock.patch.object(main, 'ACTION_LOG_PATH', action_path):
@@ -657,7 +830,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertTrue(client['frontend']['onlyGreet'])
         self.assertFalse(result['autoSend'])
 
-    def test_old_review_and_resume_preferences_migrate_to_safe_platform_resume(self):
+    def test_old_review_and_resume_preferences_migrate_without_resume_delivery(self):
         import main
         import product_store
 
@@ -684,7 +857,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertNotIn('resumeDelivery', config['strategy'])
         self.assertEqual(config['strategy']['resumeId'], 'resume-one')
         self.assertEqual(client['deliveryMode'], 'screen_only')
-        self.assertEqual(client['resumeDelivery'], 'platform_resume')
+        self.assertNotIn('resumeDelivery', client)
         self.assertFalse(plan['allowExecute'])
         self.assertEqual(plan['blockedBy'], 'screen_only')
 
@@ -703,7 +876,7 @@ class SingleRouteBackendTests(unittest.TestCase):
 
         self.assertEqual(result['strategy']['deliveryMode'], 'auto')
         self.assertNotIn('resumeDelivery', result['strategy'])
-        self.assertEqual(client['resumeDelivery'], 'platform_resume')
+        self.assertNotIn('resumeDelivery', client)
 
     def test_manual_strategy_updates_existing_client_config(self):
         import main
@@ -799,7 +972,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertEqual(result['score'], 0)
         self.assertIn('公司黑名单', result['reason'])
 
-    def test_auto_mode_enables_existing_boss_resume_flow(self):
+    def test_auto_mode_only_enables_initial_boss_greeting(self):
         import main
         import product_store
 
@@ -815,10 +988,44 @@ class SingleRouteBackendTests(unittest.TestCase):
                 product_store.save_product_config({'executionMode': 'live'})
                 client = asyncio.run(main.get_client_config())
 
-        self.assertFalse(client['frontend']['onlyGreet'])
+        self.assertTrue(client['frontend']['onlyGreet'])
         self.assertEqual(client['deliveryMode'], 'auto')
 
-    def test_test_environment_blocks_boss_auto_send_even_when_delivery_is_auto(self):
+    def test_manual_mode_can_score_and_auto_send_a_headhunter_job(self):
+        import main
+        import product_store
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / 'product_config.json'
+            secrets_path = Path(temp_dir) / 'secrets.json'
+            log_path = Path(temp_dir) / 'job_decisions.jsonl'
+            action_path = Path(temp_dir) / 'job_actions.jsonl'
+            action_path.write_text('', encoding='utf-8')
+            with mock.patch.object(product_store, 'CONFIG_PATH', config_path), mock.patch.object(product_store, 'SECRETS_PATH', secrets_path), mock.patch.object(main, 'LOG_PATH', log_path), mock.patch.object(main, 'ACTION_LOG_PATH', action_path):
+                asyncio.run(main.api_manual_strategy({
+                    'searchKeywords': ['VLA算法工程师'],
+                    'threshold': 50,
+                    'deliveryMode': 'auto',
+                }))
+                product_store.save_product_config({'executionMode': 'live'})
+                result = asyncio.run(main.get_job_score({
+                    'platform': 'boss',
+                    'title': 'VLA算法工程师',
+                    'company': '聚猎',
+                    'companyType': 'recruiter_agency',
+                    'recruiterCompany': '聚猎',
+                    'salary': '30-50K',
+                    'detail': '负责 VLA、LeRobot 与机器人真机部署',
+                }))
+                stored = product_store.get_product_config(public=False)
+
+        self.assertEqual(stored['mode'], 'manual')
+        self.assertFalse(stored['agent']['enabled'])
+        self.assertGreaterEqual(result['score'], 50)
+        self.assertTrue(result['autoSend'])
+        self.assertFalse(result['agentUsed'])
+
+    def test_auto_delivery_enables_boss_without_separate_environment_switch(self):
         import main
         import product_store
 
@@ -842,8 +1049,8 @@ class SingleRouteBackendTests(unittest.TestCase):
                 }))
 
         self.assertTrue(client['frontend']['onlyGreet'])
-        self.assertFalse(result['autoSend'])
-        self.assertEqual(result['executionMode'], 'test')
+        self.assertTrue(result['autoSend'])
+        self.assertEqual(result['executionMode'], 'live')
 
     def test_missing_company_forces_review_on_every_platform(self):
         import main
@@ -1007,7 +1214,7 @@ class SingleRouteBackendTests(unittest.TestCase):
         self.assertLess(page.index('id="resumeFile"'), page.index('id="agentToggle"'))
         self.assertLess(page.index('id="agentToggle"'), page.index('id="manualForm"'))
         self.assertLess(page.index('id="manualForm"'), page.index('id="platformList"'))
-        self.assertLess(page.index('id="platformList"'), page.index('id="executionMode"'))
+        self.assertNotIn('id="executionMode"', page)
 
     def test_resume_dropzone_supports_progress_cancel_selection_and_removal(self):
         page = (ROOT / 'static' / 'index.html').read_text(encoding='utf-8')

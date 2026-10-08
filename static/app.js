@@ -126,10 +126,6 @@ function renderConfig() {
   const c = state.config; const s = c.strategy || {}; const a = c.agent || {};
   selectAgentProvider(a.provider === 'deepseek' ? 'deepseek' : 'bailian');
   $('agentToggle').checked = c.mode === 'agent' && !!a.enabled;
-  $('executionMode').value = c.executionMode || 'test';
-  $('executionModeHint').textContent = (c.executionMode || 'test') === 'test'
-    ? '测试模式会运行完整流程，但在发送前强制停止。'
-    : '正式模式允许已完成适配的平台执行真实动作，请谨慎使用。';
   if (a.hasApiKey && a.model) showModelOptions([{id:a.model, name:a.model}], a.model);
   $('providerLabel').textContent = a.providerName || '阿里云百炼';
   $('modelLabel').textContent = a.hasApiKey && a.model ? a.model : '待选择';
@@ -272,12 +268,6 @@ $('agentToggle').addEventListener('change', async () => {
   const enabled = $('agentToggle').checked;
   state.config = await api('/api/product-config', { method:'PUT', body:JSON.stringify({ mode:enabled?'agent':'manual', agent:{enabled} }) });
   renderConfig(); toast(enabled ? 'Agent 模式已开启，请配置密钥并分析简历' : '已切换到手动规则模式');
-});
-
-$('executionMode').addEventListener('change', async () => {
-  const executionMode = $('executionMode').value;
-  state.config = await api('/api/product-config', {method:'PUT', body:JSON.stringify({executionMode})});
-  renderConfig(); toast(executionMode === 'test' ? '已切换到测试模式，所有发送动作都会被拦截' : '已切换到正式模式');
 });
 
 $('manualForm').addEventListener('submit', async e => {
